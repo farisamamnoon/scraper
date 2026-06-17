@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telegram Importer Dashboard</title>
+  <!-- Google Fonts Outfit & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --bg-primary: #0a0b10;
+      --bg-spot1: rgba(99, 102, 241, 0.15); /* Indigo spot */
+      --bg-spot2: rgba(236, 72, 153, 0.12); /* Pink spot */
+      
+      --glass-bg: rgba(255, 255, 255, 0.03);
+      --glass-border: rgba(255, 255, 255, 0.07);
+      --glass-border-focus: rgba(99, 102, 241, 0.4);
+      --glass-card: rgba(255, 255, 255, 0.02);
+      
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --accent: #6366f1; /* Indigo */
+      --accent-gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+      
+      /* Status Gradients */
+      --status-pending: linear-gradient(135deg, #374151 0%, #1f2937 100%);
+      --status-running: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
+      --status-completed: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      --status-failed: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      min-height: 100vh;
+      overflow-x: hidden;
+      position: relative;
+    }
+
+    /* Ambient Glowing Spots */
+    body::before, body::after {
+      content: "";
+      position: absolute;
+      width: 40vw;
+      height: 40vw;
+      border-radius: 50%;
+      filter: blur(120px);
+      z-index: -1;
+      pointer-events: none;
+    }
+
+    body::before {
+      top: -10vw;
+      left: -10vw;
+      background: var(--bg-spot1);
+      animation: float 20s infinite alternate;
+    }
+
+    body::after {
+      bottom: -10vw;
+      right: -10vw;
+      background: var(--bg-spot2);
+      animation: float 25s infinite alternate-reverse;
+    }
+
+    @keyframes float {
+      0% { transform: translate(0, 0) scale(1); }
+      100% { transform: translate(5%, 5%) scale(1.1); }
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem;
+    }
+
+    /* Header Styling */
+    header {
+      margin-bottom: 3rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1.5rem;
+    }
+
+    .brand-section h1 {
+      font-family: 'Outfit', sans-serif;
+      font-size: 2.5rem;
+      font-weight: 800;
+      background: var(--accent-gradient);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.03em;
+      margin-bottom: 0.5rem;
+    }
+
+    .brand-section p {
+      color: var(--text-muted);
+      font-size: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .pulse-indicator {
+      width: 8px;
+      height: 8px;
+      background-color: #10b981;
+      border-radius: 50%;
+      display: inline-block;
+      box-shadow: 0 0 12px #10b981;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.9); opacity: 0.6; }
+      50% { transform: scale(1.2); opacity: 1; box-shadow: 0 0 16px 4px rgba(16, 185, 129, 0.4); }
+      100% { transform: scale(0.9); opacity: 0.6; }
+    }
+
+    /* Stats Grid */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 3rem;
+    }
+
+    .stat-card {
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      border-radius: 20px;
+      padding: 1.5rem;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .stat-card:hover {
+      transform: translateY(-4px);
+      border-color: rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .stat-label {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .stat-value {
+      font-family: 'Outfit', sans-serif;
+      font-size: 2.25rem;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    /* Add Channel Form */
+    .control-panel {
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      border-radius: 24px;
+      padding: 2rem;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      margin-bottom: 3rem;
+    }
+
+    .control-panel h2 {
+      font-family: 'Outfit', sans-serif;
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .add-channel-form {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .input-wrapper {
+      flex: 1;
+      min-width: 280px;
+      position: relative;
+    }
+
+    .input-wrapper input {
+      width: 100%;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--glass-border);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      color: var(--text-main);
+      font-family: 'Inter', sans-serif;
+      font-size: 1rem;
+      outline: none;
+      transition: all 0.3s;
+    }
+
+    .input-wrapper input:focus {
+      border-color: var(--glass-border-focus);
+      box-shadow: 0 0 15px rgba(99, 102, 241, 0.15);
+      background: rgba(0, 0, 0, 0.4);
+    }
+
+    .submit-btn {
+      background: var(--accent-gradient);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      padding: 1rem 2rem;
+      font-family: 'Outfit', sans-serif;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      box-shadow: 0 4px 20px rgba(99, 102, 241, 0.3);
+    }
+
+    .submit-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 24px rgba(99, 102, 241, 0.5);
+    }
+
+    .submit-btn:active {
+      transform: translateY(0);
+    }
+
+    .message-banner {
+      width: 100%;
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      display: none;
+    }
+
+    .message-banner.success {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #34d399;
+      display: block;
+    }
+
+    .message-banner.error {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #f87171;
+      display: block;
+    }
+
+    /* Channels Grid */
+    .channels-title-section {
+      margin-bottom: 1.5rem;
+    }
+
+    .channels-title-section h2 {
+      font-family: 'Outfit', sans-serif;
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+
+    .channels-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .channel-card {
+      background: var(--glass-card);
+      border: 1px solid var(--glass-border);
+      border-radius: 24px;
+      padding: 1.75rem;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .channel-card:hover {
+      border-color: rgba(255, 255, 255, 0.12);
+      transform: translateY(-4px);
+    }
+
+    .channel-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+
+    .channel-info h3 {
+      font-family: 'Outfit', sans-serif;
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--text-main);
+      margin-bottom: 0.25rem;
+      line-height: 1.2;
+    }
+
+    .channel-info .username {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      display: block;
+    }
+
+    .status-badge {
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: white;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    }
+
+    .status-badge.pending { background: var(--status-pending); }
+    .status-badge.running { 
+      background: var(--status-running);
+      box-shadow: 0 0 15px rgba(59, 130, 246, 0.4);
+      animation: pulse-glow 2s infinite;
+    }
+    .status-badge.completed { background: var(--status-completed); }
+    .status-badge.failed { background: var(--status-failed); }
+
+    @keyframes pulse-glow {
+      0% { box-shadow: 0 0 10px rgba(59, 130, 246, 0.4); }
+      50% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.8); }
+      100% { box-shadow: 0 0 10px rgba(59, 130, 246, 0.4); }
+    }
+
+    /* Channel Stats */
+    .channel-meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      background: rgba(0, 0, 0, 0.15);
+      border-radius: 16px;
+      padding: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.02);
+    }
+
+    .meta-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .meta-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    .meta-value {
+      font-family: 'Outfit', sans-serif;
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    /* Running indicator bars */
+    .progress-bar-container {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .progress-bar-bg {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 999px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: var(--accent-gradient);
+      border-radius: 999px;
+      width: 0%;
+      transition: width 0.5s ease;
+    }
+
+    /* Infinite loader for active imports */
+    .progress-bar-fill.active-loading {
+      width: 100%;
+      background: linear-gradient(90deg, #6366f1 0%, #a855f7 50%, #6366f1 100%);
+      background-size: 200% 100%;
+      animation: loading-slide 1.5s infinite linear;
+    }
+
+    @keyframes loading-slide {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    /* Empty state */
+    .empty-state {
+      grid-column: 1 / -1;
+      text-align: center;
+      padding: 4rem 2rem;
+      color: var(--text-muted);
+      background: var(--glass-bg);
+      border: 1px dashed var(--glass-border);
+      border-radius: 24px;
+    }
+
+    .empty-state svg {
+      width: 48px;
+      height: 48px;
+      margin-bottom: 1rem;
+      stroke: var(--text-muted);
+      opacity: 0.5;
+    }
+
+    /* Responsive */
+    @media (max-width: 640px) {
+      .container {
+        padding: 1.5rem 1rem;
+      }
+      header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .submit-btn {
+        width: 100%;
+        justify-content: center;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    
+    <!-- Header -->
+    <header>
+      <div class="brand-section">
+        <h1>Telegram Archive Dashboard</h1>
+        <p><span class="pulse-indicator"></span> Background Scraper Active</p>
+      </div>
+    </header>
+
+    <!-- Global Stats -->
+    <div class="stats-grid" id="stats-grid">
+      <div class="stat-card">
+        <span class="stat-label">Total Messages</span>
+        <span class="stat-value" id="global-messages">0</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label font-bold">Tracked Channels</span>
+        <span class="stat-value" id="global-channels">0</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Active Imports</span>
+        <span class="stat-value" id="global-active">0</span>
+      </div>
+    </div>
+
+    <!-- Control Panel / Add Channel -->
+    <div class="control-panel">
+      <h2>Add Telegram Channel</h2>
+      <form class="add-channel-form" id="add-channel-form">
+        <div class="input-wrapper">
+          <input type="text" id="channel-username-input" placeholder="e.g. telegram, @durov or t.me/telegram" required autocomplete="off">
+        </div>
+        <button type="submit" class="submit-btn" id="submit-btn">
+          Add Channel
+        </button>
+      </form>
+      <div class="message-banner" id="message-banner"></div>
+    </div>
+
+    <!-- Channels List -->
+    <div class="channels-title-section">
+      <h2>Import Status Details</h2>
+    </div>
+
+    <div class="channels-grid" id="channels-grid">
+      <!-- Loading placeholders or empty state will go here -->
+      <div class="empty-state">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <p>Loading channels details...</p>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const addForm = document.getElementById('add-channel-form');
+    const usernameInput = document.getElementById('channel-username-input');
+    const submitBtn = document.getElementById('submit-btn');
+    const banner = document.getElementById('message-banner');
+
+    const globalMessages = document.getElementById('global-messages');
+    const globalChannels = document.getElementById('global-channels');
+    const globalActive = document.getElementById('global-active');
+    const channelsGrid = document.getElementById('channels-grid');
+
+    // Add channel submit handler
+    addForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const username = usernameInput.value.trim();
+      if (!username) return;
+
+      submitBtn.disabled = true;
+      submitBtn.innerText = 'Validating...';
+      hideBanner();
+
+      try {
+        const response = await fetch('/api/channels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          showBanner(`Channel @${data.channel.channel_username} was successfully added!`, 'success');
+          usernameInput.value = '';
+          fetchProgress(); // Refresh immediately
+        } else {
+          showBanner(data.error || 'Failed to add channel.', 'error');
+        }
+      } catch (err) {
+        showBanner('Network error. Failed to communicate with importer.', 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerText = 'Add Channel';
+      }
+    });
+
+    function showBanner(text, type) {
+      banner.innerText = text;
+      banner.className = `message-banner ${type}`;
+    }
+
+    function hideBanner() {
+      banner.style.display = 'none';
+    }
+
+    // Format numbers with commas
+    function formatNumber(num) {
+      return Number(num).toLocaleString();
+    }
+
+    // Format timestamp
+    function formatTime(isoStr) {
+      if (!isoStr) return 'N/A';
+      const date = new Date(isoStr);
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' ' + date.toLocaleDateString();
+    }
+
+    // Render channels in dashboard
+    function renderChannels(channels) {
+      if (!channels || channels.length === 0) {
+        channelsGrid.innerHTML = `
+          <div class="empty-state">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <p>No channels registered. Add a Telegram channel to start the import!</p>
+          </div>
+        `;
+        return;
+      }
+
+      channelsGrid.innerHTML = channels.map(channel => {
+        const title = channel.title || 'Resolving title...';
+        const username = channel.channel_username ? `@${channel.channel_username}` : 'Pending entity resolve';
+        const status = channel.status || 'pending';
+        const messageCount = channel.message_count || 0;
+        const lastMsgId = channel.last_processed_message_id || '0';
+        
+        let progressHtml = '';
+        if (status === 'running') {
+          progressHtml = `
+            <div class="progress-bar-container">
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill active-loading"></div>
+              </div>
+            </div>
+          `;
+        } else if (status === 'completed') {
+          progressHtml = `
+            <div class="progress-bar-container">
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill" style="width: 100%;"></div>
+              </div>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="channel-card">
+            <div class="channel-card-header">
+              <div class="channel-info">
+                <h3>${title}</h3>
+                <span class="username">${username}</span>
+              </div>
+              <span class="status-badge ${status}">${status}</span>
+            </div>
+            
+            <div class="channel-meta">
+              <div class="meta-item">
+                <span class="meta-label">Messages</span>
+                <span class="meta-value">${formatNumber(messageCount)}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Last Msg ID</span>
+                <span class="meta-value">${lastMsgId}</span>
+              </div>
+            </div>
+
+            ${progressHtml}
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Update global dashboard stats
+    function renderStats(stats) {
+      if (!stats) return;
+      globalMessages.innerText = formatNumber(stats.total_messages || 0);
+      globalChannels.innerText = formatNumber(stats.total_channels || 0);
+      globalActive.innerText = formatNumber(stats.active_imports || 0);
+    }
+
+    // Pull progress data from Express REST API
+    async function fetchProgress() {
+      try {
+        const res = await fetch('/api/progress');
+        const data = await res.json();
+        if (data.success) {
+          renderStats(data.stats);
+          renderChannels(data.channels);
+        }
+      } catch (err) {
+        console.error('Error fetching progress metrics:', err);
+      }
+    }
+
+    // Load progress initially and poll every 2 seconds
+    fetchProgress();
+    setInterval(fetchProgress, 2000);
+  </script>
+</body>
+</html>
