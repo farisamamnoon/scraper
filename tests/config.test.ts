@@ -85,10 +85,12 @@ describe('Configuration parsing and validation', () => {
     delete process.env.POSTGRES_PORT;
     delete process.env.IMPORT_CONCURRENCY;
     delete process.env.PORT;
+    delete process.env.CHANNELS;
 
     const parsed = parseAndValidateConfig();
     expect(parsed.postgres.port).toBe(5432);
     expect(parsed.importer.concurrency).toBe(1);
     expect(parsed.server.port).toBe(3000);
+    expect(parsed.importer.channels).toEqual([]);
   });
 });

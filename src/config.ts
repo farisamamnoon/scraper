@@ -66,7 +66,7 @@ export function parseAndValidateConfig(): Config {
   const s3SecretKey = getRequired('S3_SECRET_KEY');
   const s3Bucket = getRequired('S3_BUCKET');
 
-  const channelsStr = getRequired('CHANNELS');
+  const channelsStr = getOptional('CHANNELS', '');
   const concurrencyStr = getOptional('IMPORT_CONCURRENCY', '1');
   const portStr = getOptional('PORT', '3000');
 
@@ -98,10 +98,6 @@ export function parseAndValidateConfig(): Config {
     .split(',')
     .map(c => c.trim())
     .filter(c => c.length > 0);
-
-  if (channels.length === 0) {
-    throw new Error('CHANNELS list must contain at least one valid channel username.');
-  }
 
   return {
     telegram: {
