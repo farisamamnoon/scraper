@@ -250,4 +250,18 @@ export class DbService {
     const res = await this.pool.query(query);
     return res.rows[0];
   }
+
+  /**
+   * Retrieves all messages for a specific channel.
+   */
+  async getChannelMessages(channelId: string | number | bigint): Promise<any[]> {
+    const query = `
+      SELECT id, channel_id::TEXT, message_id::TEXT, message_date, telegram_json, media_key, imported_at
+      FROM telegram_messages
+      WHERE channel_id = $1
+      ORDER BY message_date DESC;
+    `;
+    const res = await this.pool.query(query, [channelId.toString()]);
+    return res.rows;
+  }
 }

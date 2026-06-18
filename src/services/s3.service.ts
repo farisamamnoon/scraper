@@ -1,4 +1,4 @@
-import { S3Client, HeadBucketCommand, CreateBucketCommand } from '@aws-sdk/client-s3';
+import { S3Client, HeadBucketCommand, CreateBucketCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { Readable } from 'stream';
 import { logger } from '../logger';
@@ -57,6 +57,26 @@ export class S3Service {
       logger.debug(`Successfully uploaded to S3: ${key}`);
     } catch (error) {
       logger.error(`Failed uploading stream to S3 key: ${key}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Retrieves an object read stream from S3.
+   */
+  async getObjectStream(key: string): Promise<{ stream: Readable; contentType?: string; contentLength?: number }> {
+    try {
+      const response = await this.client.send(new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      }));
+      return {
+        stream: response.Body as Readable,
+        contentType: response.ContentType,
+        contentLength: response.ContentLength,
+      };
+    } catch (error) {
+      logger.error(`Failed getting object from S3 key: ${key}`, error);
       throw error;
     }
   }

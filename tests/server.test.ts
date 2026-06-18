@@ -3,11 +3,13 @@ import { createServer } from '../src/server';
 import { DbService } from '../src/services/db.service';
 import { Importer } from '../src/importer';
 import { TelegramService } from '../src/services/telegram.service';
+import { S3Service } from '../src/services/s3.service';
 
 describe('Express API Server Endpoints', () => {
   let mockDbService: jest.Mocked<DbService>;
   let mockImporter: jest.Mocked<Importer>;
   let mockTelegramService: jest.Mocked<TelegramService>;
+  let mockS3Service: jest.Mocked<S3Service>;
   let app: any;
 
   beforeEach(() => {
@@ -16,6 +18,7 @@ describe('Express API Server Endpoints', () => {
       getGlobalStats: jest.fn(),
       upsertChannel: jest.fn(),
       getChannelByUsername: jest.fn(),
+      getChannelMessages: jest.fn(),
     } as unknown as jest.Mocked<DbService>;
 
     mockImporter = {} as unknown as jest.Mocked<Importer>;
@@ -24,7 +27,11 @@ describe('Express API Server Endpoints', () => {
       getChannelEntity: jest.fn(),
     } as unknown as jest.Mocked<TelegramService>;
 
-    app = createServer(mockDbService, mockImporter, mockTelegramService);
+    mockS3Service = {
+      getObjectStream: jest.fn(),
+    } as unknown as jest.Mocked<S3Service>;
+
+    app = createServer(mockDbService, mockImporter, mockTelegramService, mockS3Service);
   });
 
   describe('GET /api/progress', () => {

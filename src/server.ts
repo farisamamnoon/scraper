@@ -3,12 +3,14 @@ import path from 'path';
 import { DbService } from './services/db.service';
 import { Importer } from './importer';
 import { TelegramService } from './services/telegram.service';
+import { S3Service } from './services/s3.service';
 import { logger } from './logger';
 
 export function createServer(
   dbService: DbService,
   importer: Importer,
-  telegramService: TelegramService
+  telegramService: TelegramService,
+  s3Service: S3Service
 ) {
   const app = express();
 
@@ -89,6 +91,55 @@ export function createServer(
       });
     } catch (err) {
       next(err);
+    }
+  });
+
+  /**
+   * GET /api/channels/:channelId/messages
+   * Returns all stored messages for a specific channel.
+   */
+  app.get('/api/channels/:channelId/messages', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { channelId } = req.params;
+      const messages = await dbService.getChannelMessages(channelId);
+      res.json({
+        success: true,
+        messages
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
+   * GET /api/media
+   * Streams a media object from S3. Supports inline display or download.
+   */
+  app.get('/api/media', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const key = req.query.key as string;
+      if (!key) {
+        res.status(400).json({ success: false, error: 'Key query parameter is required.' });
+        return;
+      }
+
+      const { stream, contentType, contentLength } = await s3Service.getObjectStream(key);
+      if (contentType) {
+        res.setHeader('Content-Type', contentType);
+      }
+      if (contentLength) {
+        res.setHeader('Content-Length', contentLength);
+      }
+      if (req.query.download === 'true') {
+        const filename = path.basename(key);
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      } else {
+        res.setHeader('Content-Disposition', 'inline');
+      }
+      stream.pipe(res);
+    } catch (err: any) {
+      logger.error(`Failed to fetch media from S3 key "${req.query.key}":`, err);
+      res.status(404).json({ success: false, error: 'Media not found.' });
     }
   });
 

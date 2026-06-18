@@ -136,7 +136,7 @@ async function bootstrap() {
     await importer.start();
 
     // 10. Start Express Server
-    const app = createServer(dbService, importer, telegramService);
+    const app = createServer(dbService, importer, telegramService, s3Service);
     serverInstance = app.listen(config.server.port, () => {
       logger.info(`Web Dashboard API running on http://localhost:${config.server.port}`);
     });

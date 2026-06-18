@@ -43,10 +43,7 @@ describe('Configuration parsing and validation', () => {
   });
 
   it('should fail if required variables are missing', () => {
-    // Missing TELEGRAM_API_ID
-    process.env.TELEGRAM_API_HASH = 'abcdef0123456789';
-    process.env.POSTGRES_HOST = 'localhost';
-
+    process.env = {};
     expect(() => parseAndValidateConfig()).toThrow(/Missing required configuration environment variables/);
   });
 
