@@ -13,11 +13,7 @@ async function bootstrap() {
 
   // 1. Initialize PostgreSQL Connection Pool
   const pgPool = new Pool({
-    host: config.postgres.host,
-    port: config.postgres.port,
-    database: config.postgres.db,
-    user: config.postgres.user,
-    password: config.postgres.pass,
+    connectionString: config.postgres.connectionString,
     max: 10, // Max connection pool size
     idleTimeoutMillis: 30000,
   });
@@ -105,34 +101,6 @@ async function bootstrap() {
     `);
     logger.info('Successfully reset any active running channel states back to pending.');
 
-    // 8. Register channels from environment config (if not already registered)
-    logger.info('Registering channels specified in startup configuration...');
-    for (const username of config.importer.channels) {
-      try {
-        const cleanUser = username.trim().replace(/^https:\/\/t\.me\//, '').replace('@', '');
-        
-        // Check if channel already exists in db
-        const existing = await dbService.getChannelByUsername(cleanUser);
-        if (existing) {
-          logger.debug(`Channel @${cleanUser} already tracked in database with status: ${existing.status}`);
-          continue;
-        }
-
-        // Try to resolve username via Telegram API
-        logger.info(`Resolving initial channel @${cleanUser}...`);
-        const entity = await telegramService.getChannelEntity(cleanUser);
-        const channelId = entity.id.toString();
-        const title = entity.title || '';
-        const resolvedUser = entity.username || cleanUser;
-
-        // Register in PostgreSQL
-        await dbService.upsertChannel(channelId, resolvedUser, title, 'pending');
-        logger.info(`Registered startup channel @${resolvedUser} (${title}) as pending.`);
-      } catch (err: any) {
-        logger.error(`Failed to register startup channel "${username}" on boot: ${err.message}`);
-        // Log error but continue so the rest of the app boots
-      }
-    }
 
     // 9. Start background importer loop
     await importer.start();

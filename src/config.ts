@@ -18,11 +18,7 @@ export interface Config {
     };
   };
   postgres: {
-    host: string;
-    port: number;
-    db: string;
-    user: string;
-    pass: string;
+    connectionString: string;
   };
   s3: {
     endpoint: string;
@@ -32,7 +28,6 @@ export interface Config {
     bucket: string;
   };
   importer: {
-    channels: string[];
     concurrency: number;
   };
   server: {
@@ -65,11 +60,7 @@ export function parseAndValidateConfig(): Config {
   const telegramProxyUsername = getOptional('TELEGRAM_PROXY_USERNAME', '');
   const telegramProxyPassword = getOptional('TELEGRAM_PROXY_PASSWORD', '');
 
-  const pgHost = getRequired('POSTGRES_HOST');
-  const pgPortStr = getOptional('POSTGRES_PORT', '5432');
-  const pgDb = getRequired('POSTGRES_DB');
-  const pgUser = getRequired('POSTGRES_USER');
-  const pgPass = getRequired('POSTGRES_PASSWORD');
+  const databaseUrl = getRequired('DATABASE_URL');
 
   const s3Endpoint = getRequired('S3_ENDPOINT');
   const s3Region = getRequired('S3_REGION');
@@ -77,7 +68,6 @@ export function parseAndValidateConfig(): Config {
   const s3SecretKey = getRequired('S3_SECRET_KEY');
   const s3Bucket = getRequired('S3_BUCKET');
 
-  const channelsStr = getOptional('CHANNELS', '');
   const concurrencyStr = getOptional('IMPORT_CONCURRENCY', '1');
   const portStr = getOptional('PORT', '3000');
 
@@ -88,11 +78,6 @@ export function parseAndValidateConfig(): Config {
   const apiId = parseInt(telegramApiIdStr, 10);
   if (isNaN(apiId)) {
     throw new Error(`TELEGRAM_API_ID must be a valid integer, got "${telegramApiIdStr}"`);
-  }
-
-  const pgPort = parseInt(pgPortStr, 10);
-  if (isNaN(pgPort)) {
-    throw new Error(`POSTGRES_PORT must be a valid integer, got "${pgPortStr}"`);
   }
 
   const concurrency = parseInt(concurrencyStr, 10);
@@ -123,11 +108,6 @@ export function parseAndValidateConfig(): Config {
     }
   }
 
-  const channels = channelsStr
-    .split(',')
-    .map(c => c.trim())
-    .filter(c => c.length > 0);
-
   return {
     telegram: {
       apiId,
@@ -137,11 +117,7 @@ export function parseAndValidateConfig(): Config {
       proxy
     },
     postgres: {
-      host: pgHost,
-      port: pgPort,
-      db: pgDb,
-      user: pgUser,
-      pass: pgPass
+      connectionString: databaseUrl
     },
     s3: {
       endpoint: s3Endpoint,
@@ -151,7 +127,6 @@ export function parseAndValidateConfig(): Config {
       bucket: s3Bucket
     },
     importer: {
-      channels,
       concurrency
     },
     server: {
@@ -161,3 +136,4 @@ export function parseAndValidateConfig(): Config {
 }
 
 export const config = process.env.NODE_ENV !== 'test' ? parseAndValidateConfig() : {} as Config;
+
