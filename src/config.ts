@@ -10,6 +10,12 @@ export interface Config {
     apiHash: string;
     session?: string;
     sessionFilePath?: string;
+    proxy?: {
+      host: string;
+      port: number;
+      username?: string;
+      password?: string;
+    };
   };
   postgres: {
     host: string;
@@ -54,6 +60,11 @@ export function parseAndValidateConfig(): Config {
   const telegramApiHash = getRequired('TELEGRAM_API_HASH');
   const sessionFilePath = getOptional('TELEGRAM_SESSION_FILE_PATH', path.join(process.cwd(), '.session'));
 
+  const telegramProxyHost = getOptional('TELEGRAM_PROXY_HOST', '');
+  const telegramProxyPortStr = getOptional('TELEGRAM_PROXY_PORT', '');
+  const telegramProxyUsername = getOptional('TELEGRAM_PROXY_USERNAME', '');
+  const telegramProxyPassword = getOptional('TELEGRAM_PROXY_PASSWORD', '');
+
   const pgHost = getRequired('POSTGRES_HOST');
   const pgPortStr = getOptional('POSTGRES_PORT', '5432');
   const pgDb = getRequired('POSTGRES_DB');
@@ -94,6 +105,24 @@ export function parseAndValidateConfig(): Config {
     throw new Error(`PORT must be a valid integer, got "${portStr}"`);
   }
 
+  let proxy: any = undefined;
+  if (telegramProxyHost) {
+    const proxyPort = parseInt(telegramProxyPortStr, 10);
+    if (isNaN(proxyPort)) {
+      throw new Error(`TELEGRAM_PROXY_PORT must be a valid integer when TELEGRAM_PROXY_HOST is set, got "${telegramProxyPortStr}"`);
+    }
+    proxy = {
+      host: telegramProxyHost,
+      port: proxyPort,
+    };
+    if (telegramProxyUsername) {
+      proxy.username = telegramProxyUsername;
+    }
+    if (telegramProxyPassword) {
+      proxy.password = telegramProxyPassword;
+    }
+  }
+
   const channels = channelsStr
     .split(',')
     .map(c => c.trim())
@@ -104,7 +133,8 @@ export function parseAndValidateConfig(): Config {
       apiId,
       apiHash: telegramApiHash,
       session: process.env.TELEGRAM_SESSION,
-      sessionFilePath
+      sessionFilePath,
+      proxy
     },
     postgres: {
       host: pgHost,

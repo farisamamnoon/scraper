@@ -19,12 +19,30 @@ export class TelegramService {
   private apiHash: string;
   private customSession?: string;
   private sessionFilePath: string;
+  private proxy?: {
+    host: string;
+    port: number;
+    username?: string;
+    password?: string;
+  };
 
-  constructor(apiId: number, apiHash: string, customSession?: string, sessionFilePath?: string) {
+  constructor(
+    apiId: number,
+    apiHash: string,
+    customSession?: string,
+    sessionFilePath?: string,
+    proxy?: {
+      host: string;
+      port: number;
+      username?: string;
+      password?: string;
+    }
+  ) {
     this.apiId = apiId;
     this.apiHash = apiHash;
     this.customSession = customSession;
     this.sessionFilePath = sessionFilePath || path.join(process.cwd(), '.session');
+    this.proxy = proxy;
   }
 
   /**
@@ -43,9 +61,27 @@ export class TelegramService {
     }
 
     const session = new StringSession(sessionString);
-    this.client = new TelegramClient(session, this.apiId, this.apiHash, {
+    const clientOptions: any = {
       connectionRetries: 5,
-    });
+    };
+
+    if (this.proxy) {
+      clientOptions.useWSS = false;
+      clientOptions.proxy = {
+        ip: this.proxy.host,
+        port: this.proxy.port,
+        socksType: 5,
+      };
+      if (this.proxy.username) {
+        clientOptions.proxy.username = this.proxy.username;
+      }
+      if (this.proxy.password) {
+        clientOptions.proxy.password = this.proxy.password;
+      }
+      logger.info(`Configured Telegram client to use SOCKS5 proxy at ${this.proxy.host}:${this.proxy.port}`);
+    }
+
+    this.client = new TelegramClient(session, this.apiId, this.apiHash, clientOptions);
 
     logger.info('Connecting to Telegram API...');
     

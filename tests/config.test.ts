@@ -89,5 +89,52 @@ describe('Configuration parsing and validation', () => {
     expect(parsed.importer.concurrency).toBe(1);
     expect(parsed.server.port).toBe(3000);
     expect(parsed.importer.channels).toEqual([]);
+    expect(parsed.telegram.proxy).toBeUndefined();
+  });
+
+  it('should successfully parse proxy configuration if host and port are provided', () => {
+    process.env.TELEGRAM_API_ID = '123456';
+    process.env.TELEGRAM_API_HASH = 'abcdef0123456789';
+    process.env.POSTGRES_HOST = 'localhost';
+    process.env.POSTGRES_DB = 'db';
+    process.env.POSTGRES_USER = 'user';
+    process.env.POSTGRES_PASSWORD = 'password';
+    process.env.S3_ENDPOINT = 'endpoint';
+    process.env.S3_REGION = 'region';
+    process.env.S3_ACCESS_KEY = 'key';
+    process.env.S3_SECRET_KEY = 'secret';
+    process.env.S3_BUCKET = 'bucket';
+
+    process.env.TELEGRAM_PROXY_HOST = '127.0.0.1';
+    process.env.TELEGRAM_PROXY_PORT = '1080';
+    process.env.TELEGRAM_PROXY_USERNAME = 'proxyuser';
+    process.env.TELEGRAM_PROXY_PASSWORD = 'proxypassword';
+
+    const parsed = parseAndValidateConfig();
+    expect(parsed.telegram.proxy).toEqual({
+      host: '127.0.0.1',
+      port: 1080,
+      username: 'proxyuser',
+      password: 'proxypassword',
+    });
+  });
+
+  it('should fail if TELEGRAM_PROXY_PORT is not a valid integer', () => {
+    process.env.TELEGRAM_API_ID = '123456';
+    process.env.TELEGRAM_API_HASH = 'abcdef0123456789';
+    process.env.POSTGRES_HOST = 'localhost';
+    process.env.POSTGRES_DB = 'db';
+    process.env.POSTGRES_USER = 'user';
+    process.env.POSTGRES_PASSWORD = 'password';
+    process.env.S3_ENDPOINT = 'endpoint';
+    process.env.S3_REGION = 'region';
+    process.env.S3_ACCESS_KEY = 'key';
+    process.env.S3_SECRET_KEY = 'secret';
+    process.env.S3_BUCKET = 'bucket';
+
+    process.env.TELEGRAM_PROXY_HOST = '127.0.0.1';
+    process.env.TELEGRAM_PROXY_PORT = 'not-an-integer';
+
+    expect(() => parseAndValidateConfig()).toThrow(/TELEGRAM_PROXY_PORT must be a valid integer/);
   });
 });

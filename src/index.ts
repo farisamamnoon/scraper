@@ -45,7 +45,9 @@ async function bootstrap() {
   const telegramService = new TelegramService(
     config.telegram.apiId,
     config.telegram.apiHash,
-    config.telegram.session
+    config.telegram.session,
+    config.telegram.sessionFilePath,
+    config.telegram.proxy
   );
 
   // Initialize Importer Instance
