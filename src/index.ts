@@ -11,9 +11,13 @@ import { createServer } from './server';
 async function bootstrap() {
   logger.info('Starting Telegram Historical Importer Application...');
 
-  // 1. Initialize PostgreSQL Connection Pool
   const pgPool = new Pool({
-    connectionString: config.postgres.connectionString,
+    host: config.postgres.host,
+    port: config.postgres.port,
+    database: config.postgres.db,
+    user: config.postgres.user,
+    password: config.postgres.pass,
+    ssl: { rejectUnauthorized: true },
     max: 10, // Max connection pool size
     idleTimeoutMillis: 30000,
   });
@@ -32,7 +36,6 @@ async function bootstrap() {
       accessKeyId: config.s3.accessKey,
       secretAccessKey: config.s3.secretKey,
     },
-    forcePathStyle: true, // Necessary for MinIO/R2/local environments
   });
 
   const s3Service = new S3Service(s3Client, config.s3.bucket);
@@ -59,7 +62,7 @@ async function bootstrap() {
   // Graceful shutdown helper
   const shutdown = async (signal: string) => {
     logger.warn(`Received ${signal}. Starting graceful shutdown...`);
-    
+
     if (serverInstance) {
       serverInstance.close(() => {
         logger.info('HTTP server closed.');
@@ -68,14 +71,14 @@ async function bootstrap() {
 
     await importer.stop();
     await telegramService.disconnect();
-    
+
     try {
       await pgPool.end();
       logger.info('PostgreSQL connection pool drained.');
     } catch (dbErr) {
       logger.error('Error during PostgreSQL pool shutdown:', dbErr);
     }
-    
+
     logger.info('Graceful shutdown completed. Exiting.');
     process.exit(0);
   };
@@ -88,7 +91,7 @@ async function bootstrap() {
     await dbService.initializeSchema();
 
     // 5. Initialize S3 Bucket
-    await s3Service.ensureBucketExists();
+    // await s3Service.ensureBucketExists();
 
     // 6. Connect to Telegram API
     await telegramService.connect();

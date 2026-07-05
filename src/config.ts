@@ -18,7 +18,11 @@ export interface Config {
     };
   };
   postgres: {
-    connectionString: string;
+    host: string;
+    port: number;
+    db: string;
+    user: string;
+    pass: string;
   };
   s3: {
     endpoint: string;
@@ -60,7 +64,11 @@ export function parseAndValidateConfig(): Config {
   const telegramProxyUsername = getOptional('TELEGRAM_PROXY_USERNAME', '');
   const telegramProxyPassword = getOptional('TELEGRAM_PROXY_PASSWORD', '');
 
-  const databaseUrl = getRequired('DATABASE_URL');
+  const pgHost = getRequired('POSTGRES_HOST');
+  const pgPortStr = getOptional('POSTGRES_PORT', '5432');
+  const pgDb = getRequired('POSTGRES_DB');
+  const pgUser = getRequired('POSTGRES_USER');
+  const pgPass = getRequired('POSTGRES_PASSWORD');
 
   const s3Endpoint = getRequired('S3_ENDPOINT');
   const s3Region = getRequired('S3_REGION');
@@ -78,6 +86,11 @@ export function parseAndValidateConfig(): Config {
   const apiId = parseInt(telegramApiIdStr, 10);
   if (isNaN(apiId)) {
     throw new Error(`TELEGRAM_API_ID must be a valid integer, got "${telegramApiIdStr}"`);
+  }
+
+  const pgPort = parseInt(pgPortStr, 10);
+  if (isNaN(pgPort)) {
+    throw new Error(`POSTGRES_PORT must be a valid integer, got "${pgPortStr}"`);
   }
 
   const concurrency = parseInt(concurrencyStr, 10);
@@ -117,7 +130,11 @@ export function parseAndValidateConfig(): Config {
       proxy
     },
     postgres: {
-      connectionString: databaseUrl
+      host: pgHost,
+      port: pgPort,
+      db: pgDb,
+      user: pgUser,
+      pass: pgPass
     },
     s3: {
       endpoint: s3Endpoint,
