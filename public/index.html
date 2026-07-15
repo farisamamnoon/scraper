@@ -3,1343 +3,1081 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Telegram Importer Dashboard</title>
-  <!-- Google Fonts Outfit & Inter -->
+  <title>Archive Dashboard</title>
+  <meta name="description" content="Telegram channel archive importer — monitor import progress and manage channel tracking.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+
   <style>
+    /* ── Design tokens ──────────────────────────────────────── */
     :root {
-      --bg-primary: #0a0b10;
-      --bg-spot1: rgba(99, 102, 241, 0.15); /* Indigo spot */
-      --bg-spot2: rgba(236, 72, 153, 0.12); /* Pink spot */
-      
-      --glass-bg: rgba(255, 255, 255, 0.03);
-      --glass-border: rgba(255, 255, 255, 0.07);
-      --glass-border-focus: rgba(99, 102, 241, 0.4);
-      --glass-card: rgba(255, 255, 255, 0.02);
-      
-      --text-main: #f3f4f6;
-      --text-muted: #9ca3af;
-      --accent: #6366f1; /* Indigo */
-      --accent-gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
-      
-      /* Status Gradients */
-      --status-pending: linear-gradient(135deg, #374151 0%, #1f2937 100%);
-      --status-running: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
-      --status-completed: linear-gradient(135deg, #10b981 0%, #059669 100%);
-      --status-failed: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
+      --bg:          #111111;
+      --surface:     #1a1a1a;
+      --surface-2:   #222222;
+      --border:      #2d2d2d;
+      --border-2:    #3d3d3d;
+      --text:        #ededed;
+      --text-2:      #888;
+      --text-3:      #555;
+
+      /* Status colors — only hue in the entire UI */
+      --s-pending:   #52525b;
+      --s-running:   #3b82f6;
+      --s-done:      #22c55e;
+      --s-failed:    #ef4444;
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: 'Inter', sans-serif;
-      background-color: var(--bg-primary);
-      color: var(--text-main);
+      font-family: 'IBM Plex Sans', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
       min-height: 100vh;
-      overflow-x: hidden;
-      position: relative;
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
     }
 
-    /* Ambient Glowing Spots */
-    body::before, body::after {
-      content: "";
-      position: absolute;
-      width: 40vw;
-      height: 40vw;
-      border-radius: 50%;
-      filter: blur(120px);
-      z-index: -1;
-      pointer-events: none;
-    }
-
-    body::before {
-      top: -10vw;
-      left: -10vw;
-      background: var(--bg-spot1);
-      animation: float 20s infinite alternate;
-    }
-
-    body::after {
-      bottom: -10vw;
-      right: -10vw;
-      background: var(--bg-spot2);
-      animation: float 25s infinite alternate-reverse;
-    }
-
-    @keyframes float {
-      0% { transform: translate(0, 0) scale(1); }
-      100% { transform: translate(5%, 5%) scale(1.1); }
-    }
-
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 3rem 1.5rem;
-    }
-
-    /* Header Styling */
-    header {
-      margin-bottom: 3rem;
+    /* ── Topbar ─────────────────────────────────────────────── */
+    .topbar {
+      height: 48px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      position: sticky;
+      top: 0;
+      z-index: 20;
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 1.5rem;
+      padding: 0 20px;
+      gap: 12px;
     }
 
-    .brand-section h1 {
-      font-family: 'Outfit', sans-serif;
-      font-size: 2.5rem;
-      font-weight: 800;
-      background: var(--accent-gradient);
-      -webkit-background-clip: text;
-      background-clip: text;
-      -webkit-text-fill-color: transparent;
-      letter-spacing: -0.03em;
-      margin-bottom: 0.5rem;
-    }
-
-    .brand-section p {
-      color: var(--text-muted);
-      font-size: 1rem;
+    .topbar-left {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
+      gap: 10px;
     }
 
-    .pulse-indicator {
-      width: 8px;
-      height: 8px;
-      background-color: #10b981;
-      border-radius: 50%;
-      display: inline-block;
-      box-shadow: 0 0 12px #10b981;
-      animation: pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-      0% { transform: scale(0.9); opacity: 0.6; }
-      50% { transform: scale(1.2); opacity: 1; box-shadow: 0 0 16px 4px rgba(16, 185, 129, 0.4); }
-      100% { transform: scale(0.9); opacity: 0.6; }
-    }
-
-    /* Stats Grid */
-    .stats-grid {
+    /* Inline Telegram plane mark */
+    .brand-mark {
+      width: 24px;
+      height: 24px;
+      background: var(--surface-2);
+      border: 1px solid var(--border-2);
+      border-radius: 6px;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 1.5rem;
-      margin-bottom: 3rem;
+      place-items: center;
+      flex-shrink: 0;
     }
 
-    .stat-card {
-      background: var(--glass-bg);
-      border: 1px solid var(--glass-border);
-      border-radius: 20px;
-      padding: 1.5rem;
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    .brand-mark svg { display: block; }
+
+    .brand-sep {
+      width: 1px;
+      height: 16px;
+      background: var(--border-2);
+    }
+
+    .brand-name {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--text);
+    }
+
+    .brand-sub {
+      font-size: 12px;
+      color: var(--text-3);
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12px;
+      color: var(--text-2);
+    }
+
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--s-done);
+      animation: blink 2.8s ease-in-out infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.25; }
+    }
+
+    /* ── Page body ──────────────────────────────────────────── */
+    .page {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 28px 20px 80px;
+    }
+
+    /* ── Stats strip ────────────────────────────────────────── */
+    .stats-strip {
+      display: flex;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 24px;
+      background: var(--surface);
+    }
+
+    .stat-cell {
+      flex: 1;
+      padding: 14px 18px;
       display: flex;
       flex-direction: column;
-      gap: 0.5rem;
+      gap: 3px;
     }
 
-    .stat-card:hover {
-      transform: translateY(-4px);
-      border-color: rgba(255, 255, 255, 0.15);
-      background: rgba(255, 255, 255, 0.04);
+    .stat-cell + .stat-cell {
+      border-left: 1px solid var(--border);
     }
 
-    .stat-label {
-      font-size: 0.875rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .stat-value {
-      font-family: 'Outfit', sans-serif;
-      font-size: 2.25rem;
-      font-weight: 700;
-      color: var(--text-main);
-    }
-
-    /* Add Channel Form */
-    .control-panel {
-      background: var(--glass-bg);
-      border: 1px solid var(--glass-border);
-      border-radius: 24px;
-      padding: 2rem;
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      margin-bottom: 3rem;
-    }
-
-    .control-panel h2 {
-      font-family: 'Outfit', sans-serif;
-      font-size: 1.25rem;
+    .stat-num {
+      font-size: 24px;
       font-weight: 600;
-      margin-bottom: 1.25rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
+      letter-spacing: -0.04em;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
     }
 
-    .add-channel-form {
-      display: flex;
-      gap: 1rem;
-      flex-wrap: wrap;
+    .stat-lbl {
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--text-2);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
     }
 
-    .input-wrapper {
+    /* ── Section label ──────────────────────────────────────── */
+    .section-lbl {
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--text-3);
+      margin-bottom: 8px;
+    }
+
+    /* ── Add channel form ───────────────────────────────────── */
+    .add-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 28px;
+    }
+
+    .add-input {
       flex: 1;
-      min-width: 280px;
-      position: relative;
-    }
-
-    .input-wrapper input {
-      width: 100%;
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid var(--glass-border);
-      border-radius: 12px;
-      padding: 1rem 1.25rem;
-      color: var(--text-main);
-      font-family: 'Inter', sans-serif;
-      font-size: 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 9px 13px;
+      color: var(--text);
+      font-family: 'IBM Plex Sans', sans-serif;
+      font-size: 13px;
       outline: none;
-      transition: all 0.3s;
+      transition: border-color 0.15s, background 0.15s;
     }
 
-    .input-wrapper input:focus {
-      border-color: var(--glass-border-focus);
-      box-shadow: 0 0 15px rgba(99, 102, 241, 0.15);
-      background: rgba(0, 0, 0, 0.4);
+    .add-input::placeholder { color: var(--text-3); }
+
+    .add-input:focus {
+      border-color: var(--border-2);
+      background: var(--surface-2);
     }
 
-    .submit-btn {
-      background: var(--accent-gradient);
-      color: white;
+    .add-btn {
+      background: var(--text);
+      color: var(--bg);
       border: none;
-      border-radius: 12px;
-      padding: 1rem 2rem;
-      font-family: 'Outfit', sans-serif;
-      font-size: 1rem;
+      border-radius: 6px;
+      padding: 9px 16px;
+      font-family: 'IBM Plex Sans', sans-serif;
+      font-size: 13px;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: opacity 0.15s;
+      white-space: nowrap;
+      letter-spacing: -0.01em;
+    }
+
+    .add-btn:hover { opacity: 0.85; }
+    .add-btn:active { opacity: 0.7; }
+    .add-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    /* ── Toast ──────────────────────────────────────────────── */
+    .toast {
+      display: none;
+      font-size: 13px;
+      padding: 9px 13px;
+      border-radius: 6px;
+      border-left: 3px solid;
+      margin-bottom: 12px;
+    }
+
+    .toast.success {
+      display: block;
+      background: rgba(34, 197, 94, 0.07);
+      border-color: var(--s-done);
+      color: #86efac;
+    }
+
+    .toast.error {
+      display: block;
+      background: rgba(239, 68, 68, 0.07);
+      border-color: var(--s-failed);
+      color: #fca5a5;
+    }
+
+    /* ── Channel list ───────────────────────────────────────── */
+    .list-shell {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .list-head {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      box-shadow: 0 4px 20px rgba(99, 102, 241, 0.3);
+      padding: 8px 14px 8px 17px; /* +3px left for the border offset */
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      gap: 10px;
     }
 
-    .submit-btn:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 24px rgba(99, 102, 241, 0.5);
-    }
+    .lh-name   { flex: 1; }
+    .lh-msgs   { width: 84px; text-align: right; }
+    .lh-lastid { width: 76px; text-align: right; }
+    .lh-status { width: 80px; text-align: right; }
+    .lh-arrow  { width: 14px; }
 
-    .submit-btn:active {
-      transform: translateY(0);
-    }
-
-    .message-banner {
-      width: 100%;
-      margin-top: 1rem;
-      padding: 0.75rem 1rem;
-      border-radius: 8px;
-      font-size: 0.875rem;
-      display: none;
-    }
-
-    .message-banner.success {
-      background: rgba(16, 185, 129, 0.15);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      color: #34d399;
-      display: block;
-    }
-
-    .message-banner.error {
-      background: rgba(239, 68, 68, 0.15);
-      border: 1px solid rgba(239, 68, 68, 0.3);
-      color: #f87171;
-      display: block;
-    }
-
-    /* Channels Grid */
-    .channels-title-section {
-      margin-bottom: 1.5rem;
-    }
-
-    .channels-title-section h2 {
-      font-family: 'Outfit', sans-serif;
-      font-size: 1.5rem;
-      font-weight: 700;
-    }
-
-    .channels-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-      gap: 1.5rem;
-    }
-
-    .channel-card {
-      background: var(--glass-card);
-      border: 1px solid var(--glass-border);
-      border-radius: 24px;
-      padding: 1.75rem;
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      position: relative;
-      display: flex;
-      flex-direction: column;
-      gap: 1.25rem;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-
-    .channel-card:hover {
-      border-color: rgba(255, 255, 255, 0.12);
-      transform: translateY(-4px);
-    }
-
-    .channel-card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 1rem;
-    }
-
-    .channel-info h3 {
-      font-family: 'Outfit', sans-serif;
-      font-size: 1.25rem;
-      font-weight: 700;
-      color: var(--text-main);
-      margin-bottom: 0.25rem;
-      line-height: 1.2;
-    }
-
-    .channel-info .username {
-      color: var(--text-muted);
-      font-size: 0.875rem;
-      display: block;
-    }
-
-    .status-badge {
-      padding: 0.35rem 0.75rem;
-      border-radius: 9999px;
-      font-size: 0.75rem;
-      font-weight: 600;
+    .col-hdr-text {
+      font-size: 11px;
+      font-weight: 500;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: white;
-      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+      letter-spacing: 0.07em;
+      color: var(--text-3);
     }
 
-    .status-badge.pending { background: var(--status-pending); }
-    .status-badge.running { 
-      background: var(--status-running);
-      box-shadow: 0 0 15px rgba(59, 130, 246, 0.4);
-      animation: pulse-glow 2s infinite;
-    }
-    .status-badge.completed { background: var(--status-completed); }
-    .status-badge.failed { background: var(--status-failed); }
-
-    @keyframes pulse-glow {
-      0% { box-shadow: 0 0 10px rgba(59, 130, 246, 0.4); }
-      50% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.8); }
-      100% { box-shadow: 0 0 10px rgba(59, 130, 246, 0.4); }
-    }
-
-    /* Channel Stats */
-    .channel-meta {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1rem;
-      background: rgba(0, 0, 0, 0.15);
-      border-radius: 16px;
-      padding: 1rem;
-      border: 1px solid rgba(255, 255, 255, 0.02);
-    }
-
-    .meta-item {
+    /* Rows */
+    .ch-row {
       display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
+      align-items: center;
+      padding: 12px 14px;
+      gap: 10px;
+      border-left: 3px solid transparent;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+      cursor: pointer;
+      transition: background 0.12s;
     }
 
-    .meta-label {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-    }
+    .ch-row:last-child { border-bottom: none; }
+    .ch-row:hover { background: rgba(255,255,255,0.025); }
 
-    .meta-value {
-      font-family: 'Outfit', sans-serif;
-      font-size: 1rem;
-      font-weight: 600;
-      color: var(--text-main);
-    }
+    .ch-row.pending   { border-left-color: var(--s-pending); }
+    .ch-row.running   { border-left-color: var(--s-running); background: rgba(59,130,246,0.03); }
+    .ch-row.completed { border-left-color: var(--s-done); }
+    .ch-row.failed    { border-left-color: var(--s-failed); }
 
-    /* Running indicator bars */
-    .progress-bar-container {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-    }
+    /* Row columns */
+    .row-name   { flex: 1; min-width: 0; }
+    .row-msgs   { width: 84px; text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text); }
+    .row-lastid { width: 76px; text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--text-2); }
+    .row-status { width: 80px; text-align: right; }
+    .row-arrow  { width: 14px; text-align: right; color: var(--text-3); opacity: 0; transition: opacity 0.12s, transform 0.12s; font-size: 13px; }
 
-    .progress-bar-bg {
-      height: 6px;
-      background: rgba(255, 255, 255, 0.05);
-      border-radius: 999px;
+    .ch-row:hover .row-arrow { opacity: 1; transform: translateX(2px); }
+
+    .ch-title {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
       overflow: hidden;
-      position: relative;
+      text-overflow: ellipsis;
+      letter-spacing: -0.01em;
     }
 
-    .progress-bar-fill {
-      height: 100%;
-      background: var(--accent-gradient);
-      border-radius: 999px;
-      width: 0%;
-      transition: width 0.5s ease;
+    .ch-user {
+      font-size: 11.5px;
+      color: var(--text-2);
+      font-family: 'IBM Plex Mono', monospace;
+      letter-spacing: 0;
     }
 
-    /* Infinite loader for active imports */
-    .progress-bar-fill.active-loading {
-      width: 100%;
-      background: linear-gradient(90deg, #6366f1 0%, #a855f7 50%, #6366f1 100%);
-      background-size: 200% 100%;
-      animation: loading-slide 1.5s infinite linear;
+    /* Status pill */
+    .pill {
+      display: inline-block;
+      font-size: 10.5px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-family: 'IBM Plex Sans', sans-serif;
     }
 
-    @keyframes loading-slide {
-      0% { background-position: 200% 0; }
-      100% { background-position: -200% 0; }
-    }
+    .pill.pending   { color: #a1a1aa; background: rgba(113,113,122,0.12); }
+    .pill.running   { color: #93c5fd; background: rgba(59,130,246,0.13); }
+    .pill.completed { color: #86efac; background: rgba(34,197,94,0.12); }
+    .pill.failed    { color: #fca5a5; background: rgba(239,68,68,0.12); }
 
     /* Empty state */
-    .empty-state {
-      grid-column: 1 / -1;
+    .empty-row {
+      padding: 48px 24px;
       text-align: center;
-      padding: 4rem 2rem;
-      color: var(--text-muted);
-      background: var(--glass-bg);
-      border: 1px dashed var(--glass-border);
-      border-radius: 24px;
+      color: var(--text-3);
+      font-size: 13px;
+      background: var(--bg);
     }
 
-    .empty-state svg {
-      width: 48px;
-      height: 48px;
-      margin-bottom: 1rem;
-      stroke: var(--text-muted);
-      opacity: 0.5;
-    }
-
-    /* Responsive */
-    @media (max-width: 640px) {
-      .container {
-        padding: 1.5rem 1rem;
-      }
-      header {
-        flex-direction: column;
-        align-items: flex-start;
-      }
-      .submit-btn {
-        width: 100%;
-        justify-content: center;
-      }
-    }
-
-    /* Modal / Drawer Overlay */
+    /* ── Explorer modal ─────────────────────────────────────── */
     .explorer-overlay {
       position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(5, 5, 8, 0.85);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      z-index: 1000;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.72);
+      backdrop-filter: blur(3px);
+      z-index: 100;
       display: none;
       align-items: center;
       justify-content: center;
-      opacity: 0;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
-    .explorer-overlay.active {
-      display: flex;
-      opacity: 1;
-    }
+    .explorer-overlay.open { display: flex; }
 
-    .explorer-container {
+    .exp-box {
       width: 95vw;
-      height: 90vh;
-      max-width: 1400px;
-      background: rgba(15, 17, 26, 0.7);
-      border: 1px solid var(--glass-border);
-      border-radius: 24px;
+      height: 88vh;
+      max-width: 1260px;
+      background: var(--surface);
+      border: 1px solid var(--border-2);
+      border-radius: 12px;
       display: grid;
-      grid-template-rows: 70px minmax(0, 1fr);
+      grid-template-rows: 48px 1fr;
       overflow: hidden;
-      box-shadow: 0 30px 60px rgba(0, 0, 0, 0.6);
-      transform: scale(0.95);
-      transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 40px 100px rgba(0, 0, 0, 0.7);
     }
 
-    .explorer-overlay.active .explorer-container {
-      transform: scale(1);
-    }
-
-    .explorer-header {
-      padding: 0 2rem;
-      border-bottom: 1px solid var(--glass-border);
+    .exp-topbar {
+      padding: 0 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      align-items: center;
-      background: rgba(255, 255, 255, 0.01);
     }
 
-    .explorer-title {
-      font-family: 'Outfit', sans-serif;
-      font-size: 1.25rem;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
+    .exp-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.01em;
     }
 
-    .explorer-close-btn {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--glass-border);
-      color: var(--text-main);
-      width: 36px;
-      height: 36px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+    .exp-close {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text-2);
       cursor: pointer;
-      font-size: 1rem;
-      transition: all 0.2s;
-    }
-
-    .explorer-close-btn:hover {
-      background: rgba(239, 68, 68, 0.2);
-      border-color: rgba(239, 68, 68, 0.4);
-      color: #f87171;
-    }
-
-    .explorer-body {
+      font-size: 13px;
       display: grid;
-      grid-template-columns: 320px 1fr 380px;
-      height: 100%;
-      min-height: 0;
+      place-items: center;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
+    }
+
+    .exp-close:hover {
+      background: rgba(239, 68, 68, 0.14);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+    }
+
+    .exp-body {
+      display: grid;
+      grid-template-columns: 268px 1fr 340px;
       overflow: hidden;
     }
 
-    /* Column 1: Messages List */
-    .msg-list-col {
-      border-right: 1px solid var(--glass-border);
+    /* Column 1: message list */
+    .exp-col-list {
+      border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
-      height: 100%;
-      min-height: 0;
-      background: rgba(0, 0, 0, 0.1);
+      background: var(--bg);
+      overflow: hidden;
     }
 
-    .msg-list-header {
-      padding: 1rem;
-      border-bottom: 1px solid var(--glass-border);
-      font-size: 0.875rem;
-      font-weight: 600;
-      color: var(--text-muted);
+    .exp-col-hdr {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      font-weight: 500;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.07em;
+      color: var(--text-3);
+      flex-shrink: 0;
     }
 
-    .msg-list-items {
+    .exp-list-scroll {
       flex: 1;
       overflow-y: auto;
-      padding: 0.75rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
     }
 
-    .msg-list-item {
-      padding: 1rem;
-      border-radius: 12px;
-      border: 1px solid transparent;
-      background: rgba(255, 255, 255, 0.01);
+    .exp-msg-item {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
       cursor: pointer;
-      transition: all 0.2s;
-      display: flex;
-      flex-direction: column;
-      gap: 0.4rem;
+      transition: background 0.1s;
     }
 
-    .msg-list-item:hover {
-      background: rgba(255, 255, 255, 0.04);
-      border-color: var(--glass-border);
+    .exp-msg-item:last-child { border-bottom: none; }
+    .exp-msg-item:hover { background: var(--surface); }
+
+    .exp-msg-item.active {
+      background: var(--surface-2);
+      border-left: 2px solid var(--s-running);
+      padding-left: 12px;
     }
 
-    .msg-list-item.active {
-      background: rgba(99, 102, 241, 0.15);
-      border-color: var(--glass-border-focus);
-    }
-
-    .msg-item-meta {
+    .exp-msg-meta {
       display: flex;
       justify-content: space-between;
-      align-items: center;
-      font-size: 0.75rem;
-      color: var(--text-muted);
+      font-size: 10.5px;
+      font-family: 'IBM Plex Mono', monospace;
+      color: var(--text-3);
+      margin-bottom: 4px;
     }
 
-    .msg-item-snippet {
-      font-size: 0.875rem;
-      color: var(--text-main);
+    .exp-msg-snippet {
+      font-size: 12px;
+      color: var(--text-2);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
-    .msg-item-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.25rem;
-      padding: 0.2rem 0.5rem;
-      border-radius: 6px;
-      font-size: 0.7rem;
-      font-weight: 600;
-      background: rgba(99, 102, 241, 0.2);
-      color: #a5b4fc;
-      width: fit-content;
+    .exp-media-tag {
+      display: inline-block;
+      margin-top: 4px;
+      font-size: 10px;
+      font-weight: 500;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: rgba(59, 130, 246, 0.1);
+      color: #93c5fd;
     }
 
-    /* Column 2: Message Detail */
-    .msg-detail-col {
+    /* Column 2: detail */
+    .exp-col-detail {
       display: flex;
       flex-direction: column;
-      padding: 2rem;
+      padding: 18px;
       overflow-y: auto;
-      gap: 1.5rem;
-      height: 100%;
-      border-right: 1px solid var(--glass-border);
+      gap: 14px;
+      border-right: 1px solid var(--border);
     }
 
-    .msg-detail-empty {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
-      color: var(--text-muted);
-      gap: 1rem;
-    }
-
-    .msg-detail-empty svg {
-      width: 48px;
-      height: 48px;
-      opacity: 0.3;
-    }
-
-    .detail-card {
-      background: rgba(0, 0, 0, 0.2);
-      border: 1px solid var(--glass-border);
-      border-radius: 16px;
-      padding: 1.5rem;
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-    }
-
-    .detail-text {
-      font-size: 1.05rem;
-      line-height: 1.6;
-      white-space: pre-wrap;
-    }
-
-    /* Media Player Container */
-    .media-player-container {
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid var(--glass-border);
-      border-radius: 16px;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-      padding: 1rem;
-    }
-
-    .media-preview-box {
-      width: 100%;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      border-radius: 8px;
-      overflow: hidden;
-      background: #050608;
-    }
-
-    .media-preview-box img {
-      max-width: 100%;
-      max-height: 450px;
-      object-fit: contain;
-      border-radius: 8px;
-      transition: transform 0.3s;
-    }
-
-    .media-preview-box img:hover {
-      transform: scale(1.02);
-    }
-
-    .media-preview-box video {
-      width: 100%;
-      max-height: 450px;
-      border-radius: 8px;
-      outline: none;
-    }
-
-    .media-preview-box audio {
-      width: 100%;
-      outline: none;
-      margin: 1rem 0;
-    }
-
-    .media-doc-card {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-      padding: 1rem;
-      background: rgba(255, 255, 255, 0.02);
-      border-radius: 12px;
-      border: 1px solid var(--glass-border);
-      width: 100%;
-    }
-
-    .media-doc-icon {
-      font-size: 2rem;
-    }
-
-    .media-doc-info {
+    .exp-detail-empty {
       flex: 1;
       display: flex;
       flex-direction: column;
-      gap: 0.25rem;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: var(--text-3);
+      font-size: 13px;
     }
 
-    .media-doc-name {
-      font-weight: 600;
-      font-size: 0.95rem;
-      word-break: break-all;
+    .exp-block {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 13px 15px;
     }
 
-    .media-doc-size {
-      font-size: 0.8rem;
-      color: var(--text-muted);
+    .exp-block-lbl {
+      font-size: 10.5px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text-3);
+      margin-bottom: 8px;
     }
 
-    .media-actions {
+    .exp-msg-text {
+      font-size: 13px;
+      line-height: 1.65;
+      color: var(--text);
+      white-space: pre-wrap;
+    }
+
+    /* Media */
+    .media-shell {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .media-preview {
       display: flex;
-      gap: 0.75rem;
+      align-items: center;
+      justify-content: center;
+      background: #0a0a0a;
+      min-height: 80px;
     }
 
-    .media-download-btn {
-      background: var(--accent-gradient);
-      color: white;
-      text-decoration: none;
-      padding: 0.75rem 1.25rem;
-      border-radius: 10px;
-      font-weight: 600;
-      font-size: 0.9rem;
+    .media-preview img {
+      max-width: 100%;
+      max-height: 340px;
+      object-fit: contain;
+    }
+
+    .media-preview video {
+      width: 100%;
+      max-height: 340px;
+    }
+
+    .media-preview audio {
+      width: 100%;
+      padding: 16px;
+    }
+
+    .media-footer {
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .media-fname {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    .media-fmeta {
+      font-size: 11px;
+      color: var(--text-2);
+      margin-top: 1px;
+    }
+
+    .media-dl {
       display: inline-flex;
       align-items: center;
-      gap: 0.5rem;
-      transition: all 0.2s;
+      gap: 5px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text);
+      background: var(--surface-2);
+      border: 1px solid var(--border-2);
+      border-radius: 5px;
+      padding: 5px 12px;
+      text-decoration: none;
+      transition: background 0.12s;
+      white-space: nowrap;
     }
 
-    .media-download-btn:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4);
-    }
+    .media-dl:hover { background: var(--border); }
 
-    /* Column 3: JSON Column */
-    .json-col {
+    /* Column 3: JSON */
+    .exp-col-json {
       display: flex;
       flex-direction: column;
-      height: 100%;
-      background: rgba(0, 0, 0, 0.15);
+      background: #0d0d0d;
+      overflow: hidden;
     }
 
-    .json-header {
-      padding: 1rem;
-      border-bottom: 1px solid var(--glass-border);
+    .json-hdr {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
     }
 
-    .json-header span {
-      font-size: 0.875rem;
-      font-weight: 600;
-      color: var(--text-muted);
+    .json-hdr-lbl {
+      font-size: 11px;
+      font-weight: 500;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.07em;
+      color: var(--text-3);
     }
 
     .json-copy-btn {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--glass-border);
-      color: var(--text-main);
-      padding: 0.4rem 0.8rem;
-      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-2);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 3px 10px;
       cursor: pointer;
-      font-size: 0.75rem;
-      font-weight: 600;
-      transition: all 0.2s;
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
+      transition: background 0.12s, color 0.12s;
+      font-family: 'IBM Plex Sans', sans-serif;
     }
 
-    .json-copy-btn:hover {
-      background: rgba(255, 255, 255, 0.1);
-      border-color: rgba(255, 255, 255, 0.2);
-    }
+    .json-copy-btn:hover { background: var(--surface-2); color: var(--text); }
 
-    .json-content-wrapper {
+    .json-scroll {
       flex: 1;
       overflow-y: auto;
-      padding: 1rem;
+      padding: 14px;
     }
 
-    .json-code {
-      font-family: 'Courier New', Courier, monospace;
-      font-size: 0.8rem;
-      color: #a5b4fc;
+    .json-pre {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11.5px;
+      line-height: 1.7;
+      color: #8a8a8a;
       white-space: pre-wrap;
       word-break: break-all;
     }
 
-    /* Scrollbars styling */
-    .msg-list-items::-webkit-scrollbar,
-    .msg-detail-col::-webkit-scrollbar,
-    .json-content-wrapper::-webkit-scrollbar {
-      width: 6px;
-    }
-    
-    .msg-list-items::-webkit-scrollbar-track,
-    .msg-detail-col::-webkit-scrollbar-track,
-    .json-content-wrapper::-webkit-scrollbar-track {
-      background: transparent;
+    /* Scrollbar styling */
+    .exp-list-scroll::-webkit-scrollbar,
+    .exp-col-detail::-webkit-scrollbar,
+    .json-scroll::-webkit-scrollbar { width: 4px; }
+    .exp-list-scroll::-webkit-scrollbar-track,
+    .exp-col-detail::-webkit-scrollbar-track,
+    .json-scroll::-webkit-scrollbar-track { background: transparent; }
+    .exp-list-scroll::-webkit-scrollbar-thumb,
+    .exp-col-detail::-webkit-scrollbar-thumb,
+    .json-scroll::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 2px; }
+
+    /* ── Responsive ─────────────────────────────────────────── */
+    @media (max-width: 680px) {
+      .page { padding: 20px 14px 60px; }
+      .row-lastid, .lh-lastid { display: none; }
+      .stats-strip { flex-direction: column; }
+      .stat-cell + .stat-cell { border-left: none; border-top: 1px solid var(--border); }
+      .add-row { flex-direction: column; }
+      .add-btn { width: 100%; }
+      .brand-sub { display: none; }
     }
 
-    .msg-list-items::-webkit-scrollbar-thumb,
-    .msg-detail-col::-webkit-scrollbar-thumb,
-    .json-content-wrapper::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, 0.1);
-      border-radius: 999px;
-    }
-
-    .msg-list-items::-webkit-scrollbar-thumb:hover,
-    .msg-detail-col::-webkit-scrollbar-thumb:hover,
-    .json-content-wrapper::-webkit-scrollbar-thumb:hover {
-      background: rgba(255, 255, 255, 0.25);
+    @media (prefers-reduced-motion: reduce) {
+      .live-dot { animation: none; }
+      .ch-row   { transition: none; }
     }
   </style>
 </head>
 <body>
 
-  <div class="container">
-    
-    <!-- Header -->
-    <header>
-      <div class="brand-section">
-        <h1>Telegram Archive Dashboard</h1>
-        <p><span class="pulse-indicator"></span> Background Scraper Active</p>
-      </div>
-    </header>
-
-    <!-- Global Stats -->
-    <div class="stats-grid" id="stats-grid">
-      <div class="stat-card">
-        <span class="stat-label">Total Messages</span>
-        <span class="stat-value" id="global-messages">0</span>
-      </div>
-      <div class="stat-card">
-        <span class="stat-label font-bold">Tracked Channels</span>
-        <span class="stat-value" id="global-channels">0</span>
-      </div>
-      <div class="stat-card">
-        <span class="stat-label">Active Imports</span>
-        <span class="stat-value" id="global-active">0</span>
-      </div>
-    </div>
-
-    <!-- Control Panel / Add Channel -->
-    <div class="control-panel">
-      <h2>Add Telegram Channel</h2>
-      <form class="add-channel-form" id="add-channel-form">
-        <div class="input-wrapper">
-          <input type="text" id="channel-username-input" placeholder="e.g. telegram, @durov or t.me/telegram" required autocomplete="off">
-        </div>
-        <button type="submit" class="submit-btn" id="submit-btn">
-          Add Channel
-        </button>
-      </form>
-      <div class="message-banner" id="message-banner"></div>
-    </div>
-
-    <!-- Channels List -->
-    <div class="channels-title-section">
-      <h2>Import Status Details</h2>
-    </div>
-
-    <div class="channels-grid" id="channels-grid">
-      <!-- Loading placeholders or empty state will go here -->
-      <div class="empty-state">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+  <!-- ── Topbar ────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="brand-mark">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
+          <path d="M2 10L18 4L14 17L10 14L8 17L7 13L2 10Z" fill="#ededed" opacity="0.85"/>
         </svg>
-        <p>Loading channels details...</p>
+      </div>
+      <span class="brand-name">Archive</span>
+      <div class="brand-sep"></div>
+      <span class="brand-sub">Telegram Importer</span>
+    </div>
+    <div class="topbar-right">
+      <div class="live-dot" id="live-dot"></div>
+      <span>Live</span>
+    </div>
+  </header>
+
+  <!-- ── Main ─────────────────────────────────────────────── -->
+  <main class="page">
+
+    <!-- Stats -->
+    <div class="stats-strip">
+      <div class="stat-cell">
+        <span class="stat-num" id="stat-msgs">—</span>
+        <span class="stat-lbl">Messages archived</span>
+      </div>
+      <div class="stat-cell">
+        <span class="stat-num" id="stat-chans">—</span>
+        <span class="stat-lbl">Channels tracked</span>
+      </div>
+      <div class="stat-cell">
+        <span class="stat-num" id="stat-active">—</span>
+        <span class="stat-lbl">Active imports</span>
       </div>
     </div>
 
+    <!-- Add channel -->
+    <p class="section-lbl">Add channel</p>
+    <div class="toast" id="banner"></div>
+    <form class="add-row" id="add-form">
+      <input class="add-input" id="ch-input" type="text"
+             placeholder="@channel or t.me/channel" autocomplete="off" required>
+      <button class="add-btn" id="add-btn" type="submit">Track channel</button>
+    </form>
+
+    <!-- Channel list -->
+    <p class="section-lbl">Import queue</p>
+    <div class="list-shell">
+      <div class="list-head">
+        <div class="lh-name  col-hdr-text">Channel</div>
+        <div class="lh-msgs  col-hdr-text">Messages</div>
+        <div class="lh-lastid col-hdr-text">Last ID</div>
+        <div class="lh-status col-hdr-text">Status</div>
+        <div class="lh-arrow"></div>
+      </div>
+      <div id="ch-list">
+        <div class="empty-row">Loading…</div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ── Explorer modal ───────────────────────────────────── -->
+  <div class="explorer-overlay" id="exp-overlay">
+    <div class="exp-box">
+      <div class="exp-topbar">
+        <span class="exp-title" id="exp-title-text">Channel Explorer</span>
+        <button class="exp-close" id="exp-close-btn" onclick="closeExplorer()">✕</button>
+      </div>
+      <div class="exp-body">
+
+        <!-- Col 1: message list -->
+        <div class="exp-col-list">
+          <div class="exp-col-hdr">Messages</div>
+          <div class="exp-list-scroll" id="exp-list-scroll">
+            <div style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">Select a channel</div>
+          </div>
+        </div>
+
+        <!-- Col 2: detail + media -->
+        <div class="exp-col-detail" id="exp-col-detail">
+          <div class="exp-detail-empty">
+            <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" opacity="0.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+            </svg>
+            <span>Select a message</span>
+          </div>
+        </div>
+
+        <!-- Col 3: JSON -->
+        <div class="exp-col-json">
+          <div class="json-hdr">
+            <span class="json-hdr-lbl">JSON payload</span>
+            <button class="json-copy-btn" id="json-copy-btn" onclick="copyJson()">Copy</button>
+          </div>
+          <div class="json-scroll">
+            <pre class="json-pre" id="json-pre">// Select a message</pre>
+          </div>
+        </div>
+
+      </div>
+    </div>
   </div>
 
   <script>
-    const addForm = document.getElementById('add-channel-form');
-    const usernameInput = document.getElementById('channel-username-input');
-    const submitBtn = document.getElementById('submit-btn');
-    const banner = document.getElementById('message-banner');
+    // ── Refs ─────────────────────────────────────────────────
+    const addForm   = document.getElementById('add-form');
+    const chInput   = document.getElementById('ch-input');
+    const addBtn    = document.getElementById('add-btn');
+    const banner    = document.getElementById('banner');
+    const chList    = document.getElementById('ch-list');
+    const statMsgs  = document.getElementById('stat-msgs');
+    const statChans = document.getElementById('stat-chans');
+    const statActive= document.getElementById('stat-active');
 
-    const globalMessages = document.getElementById('global-messages');
-    const globalChannels = document.getElementById('global-channels');
-    const globalActive = document.getElementById('global-active');
-    const channelsGrid = document.getElementById('channels-grid');
+    // ── Utils ────────────────────────────────────────────────
+    const fmt = n => Number(n || 0).toLocaleString();
 
-    // Add channel submit handler
-    addForm.addEventListener('submit', async (e) => {
+    function esc(s) {
+      if (!s) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function fmtDate(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+        + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function fmtBytes(b) {
+      if (!b) return '0 B';
+      const K = 1024, units = ['B','KB','MB','GB'];
+      const i = Math.floor(Math.log(b) / Math.log(K));
+      return (b / Math.pow(K, i)).toFixed(1) + ' ' + units[i];
+    }
+
+    // ── Banner ───────────────────────────────────────────────
+    function showBanner(msg, type) { banner.textContent = msg; banner.className = `toast ${type}`; }
+    function hideBanner()          { banner.className = 'toast'; }
+
+    // ── Add channel ──────────────────────────────────────────
+    addForm.addEventListener('submit', async e => {
       e.preventDefault();
-      
-      const username = usernameInput.value.trim();
+      const username = chInput.value.trim();
       if (!username) return;
-
-      submitBtn.disabled = true;
-      submitBtn.innerText = 'Validating...';
+      addBtn.disabled = true;
+      addBtn.textContent = 'Checking…';
       hideBanner();
-
       try {
-        const response = await fetch('/api/channels', {
+        const res  = await fetch('/api/channels', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username })
         });
-        
-        const data = await response.json();
-        
+        const data = await res.json();
         if (data.success) {
-          showBanner(`Channel @${data.channel.channel_username} was successfully added!`, 'success');
-          usernameInput.value = '';
-          fetchProgress(); // Refresh immediately
+          showBanner(`@${data.channel.channel_username} added to the import queue.`, 'success');
+          chInput.value = '';
+          await fetchProgress();
         } else {
           showBanner(data.error || 'Failed to add channel.', 'error');
         }
-      } catch (err) {
-        showBanner('Network error. Failed to communicate with importer.', 'error');
+      } catch {
+        showBanner('Network error — could not reach the server.', 'error');
       } finally {
-        submitBtn.disabled = false;
-        submitBtn.innerText = 'Add Channel';
+        addBtn.disabled = false;
+        addBtn.textContent = 'Track channel';
       }
     });
 
-    function showBanner(text, type) {
-      banner.innerText = text;
-      banner.className = `message-banner ${type}`;
-    }
+    // ── Channel list: smart diff update (kills the flicker) ──
+    // Key insight: only rebuild DOM when the channel *set* changes.
+    // When polling with same channels, patch values in-place.
+    let _channelKey = '';   // serialised channel ids to detect structural changes
 
-    function hideBanner() {
-      banner.style.display = 'none';
-    }
-
-    // Format numbers with commas
-    function formatNumber(num) {
-      return Number(num).toLocaleString();
-    }
-
-    // Format timestamp
-    function formatTime(isoStr) {
-      if (!isoStr) return 'N/A';
-      const date = new Date(isoStr);
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' ' + date.toLocaleDateString();
-    }
-
-    // Render channels in dashboard
     function renderChannels(channels) {
       if (!channels || channels.length === 0) {
-        channelsGrid.innerHTML = `
-          <div class="empty-state">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            <p>No channels registered. Add a Telegram channel to start the import!</p>
-          </div>
-        `;
+        _channelKey = '';
+        chList.innerHTML = '<div class="empty-row">No channels tracked yet — add one above.</div>';
         return;
       }
 
-      channelsGrid.innerHTML = channels.map(channel => {
-        const title = channel.title || 'Resolving title...';
-        const username = channel.channel_username ? `@${channel.channel_username}` : 'Pending entity resolve';
-        const status = channel.status || 'pending';
-        const messageCount = channel.message_count || 0;
-        const lastMsgId = channel.last_processed_message_id || '0';
-        
-        let progressHtml = '';
-        if (status === 'running') {
-          progressHtml = `
-            <div class="progress-bar-container">
-              <div class="progress-bar-bg">
-                <div class="progress-bar-fill active-loading"></div>
-              </div>
-            </div>
-          `;
-        } else if (status === 'completed') {
-          progressHtml = `
-            <div class="progress-bar-container">
-              <div class="progress-bar-bg">
-                <div class="progress-bar-fill" style="width: 100%;"></div>
-              </div>
-            </div>
-          `;
-        }
+      const newKey = channels.map(c => c.channel_id).join(',');
 
+      if (newKey === _channelKey) {
+        // Same set of channels: patch values in-place, no DOM rebuild
+        channels.forEach(ch => {
+          const row = document.getElementById(`cr-${ch.channel_id}`);
+          if (!row) return;
+          // Status class
+          row.className = `ch-row ${ch.status}`;
+          // Pill
+          const pill = row.querySelector('.pill');
+          if (pill) { pill.className = `pill ${ch.status}`; pill.textContent = ch.status; }
+          // Numbers (use data attrs to skip DOM write when unchanged)
+          const msgsEl = row.querySelector('.js-msgs');
+          const newMsgs = fmt(ch.message_count);
+          if (msgsEl && msgsEl.textContent !== newMsgs) msgsEl.textContent = newMsgs;
+          const idEl = row.querySelector('.js-lastid');
+          const newId = ch.last_processed_message_id || '—';
+          if (idEl && idEl.textContent !== String(newId)) idEl.textContent = newId;
+        });
+        return;
+      }
+
+      // Channel set changed — full rebuild only here
+      _channelKey = newKey;
+      chList.innerHTML = channels.map(ch => {
+        const title  = esc(ch.title || 'Resolving…');
+        const uname  = ch.channel_username ? `@${esc(ch.channel_username)}` : '—';
+        const status = ch.status || 'pending';
         return `
-          <div class="channel-card" style="cursor: pointer;" onclick="openChannelExplorer('${channel.channel_id}', \`${escapeHtml(title)}\`)">
-            <div class="channel-card-header">
-              <div class="channel-info">
-                <h3>${title}</h3>
-                <span class="username">${username}</span>
-              </div>
-              <span class="status-badge ${status}">${status}</span>
+          <div class="ch-row ${status}" id="cr-${ch.channel_id}"
+               onclick="openExplorer('${esc(ch.channel_id)}', '${title}')">
+            <div class="row-name">
+              <div class="ch-title">${title}</div>
+              <div class="ch-user">${uname}</div>
             </div>
-            
-            <div class="channel-meta">
-              <div class="meta-item">
-                <span class="meta-label">Messages</span>
-                <span class="meta-value">${formatNumber(messageCount)}</span>
-              </div>
-              <div class="meta-item">
-                <span class="meta-label">Last Msg ID</span>
-                <span class="meta-value">${lastMsgId}</span>
-              </div>
-            </div>
-
-            ${progressHtml}
-          </div>
-        `;
+            <div class="row-msgs js-msgs">${fmt(ch.message_count)}</div>
+            <div class="row-lastid js-lastid">${esc(String(ch.last_processed_message_id || '—'))}</div>
+            <div class="row-status"><span class="pill ${status}">${status}</span></div>
+            <div class="row-arrow">›</div>
+          </div>`;
       }).join('');
     }
 
-    // Update global dashboard stats
-    function renderStats(stats) {
-      if (!stats) return;
-      globalMessages.innerText = formatNumber(stats.total_messages || 0);
-      globalChannels.innerText = formatNumber(stats.total_channels || 0);
-      globalActive.innerText = formatNumber(stats.active_imports || 0);
+    // ── Stats ────────────────────────────────────────────────
+    function renderStats(s) {
+      if (!s) return;
+      statMsgs.textContent   = fmt(s.total_messages);
+      statChans.textContent  = fmt(s.total_channels);
+      statActive.textContent = fmt(s.active_imports);
     }
 
-    // Pull progress data from Express REST API
+    // ── Polling ──────────────────────────────────────────────
     async function fetchProgress() {
       try {
-        const res = await fetch('/api/progress');
+        const res  = await fetch('/api/progress');
         const data = await res.json();
         if (data.success) {
           renderStats(data.stats);
           renderChannels(data.channels);
         }
       } catch (err) {
-        console.error('Error fetching progress metrics:', err);
+        console.error('[poll error]', err);
       }
     }
 
-    let currentExplorerChannelId = null;
-    let channelMessages = [];
-    let selectedMessage = null;
+    fetchProgress();
+    setInterval(fetchProgress, 2000);
 
-    async function openChannelExplorer(channelId, channelTitle) {
-      currentExplorerChannelId = channelId;
-      document.getElementById('explorer-channel-title').innerText = channelTitle;
-      
-      const overlay = document.getElementById('explorer-overlay');
-      overlay.style.display = 'flex';
-      // Force reflow
-      overlay.offsetHeight;
-      overlay.classList.add('active');
+    // ── Explorer ─────────────────────────────────────────────
+    let expMessages = [];
+    let selectedMsg = null;
 
-      // Clear layout first
-      document.getElementById('msg-list-items').innerHTML = '<div style="padding: 2rem; text-align: center; color: var(--text-muted)">Loading messages...</div>';
-      clearActiveMessage();
+    async function openExplorer(channelId, title) {
+      document.getElementById('exp-title-text').textContent = title;
+      document.getElementById('exp-overlay').classList.add('open');
+      document.getElementById('exp-list-scroll').innerHTML =
+        '<div style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">Loading…</div>';
+      resetDetail();
 
       try {
-        const res = await fetch(`/api/channels/${channelId}/messages`);
+        const res  = await fetch(`/api/channels/${channelId}/messages`);
         const data = await res.json();
-        if (data.success) {
-          channelMessages = data.messages;
-          renderMessagesList(data.messages);
-        } else {
-          document.getElementById('msg-list-items').innerHTML = '<div style="padding: 2rem; text-align: center; color: #f87171">Failed to load messages</div>';
-        }
-      } catch (err) {
-        console.error('Error fetching messages:', err);
-        document.getElementById('msg-list-items').innerHTML = '<div style="padding: 2rem; text-align: center; color: #f87171">Network error</div>';
+        expMessages = data.success ? data.messages : [];
+        renderMsgList(expMessages);
+      } catch {
+        document.getElementById('exp-list-scroll').innerHTML =
+          '<div style="padding:20px;text-align:center;color:#fca5a5;font-size:12px;">Failed to load.</div>';
       }
     }
 
-    function closeChannelExplorer() {
-      const overlay = document.getElementById('explorer-overlay');
-      overlay.classList.remove('active');
-      setTimeout(() => {
-        overlay.style.display = 'none';
-      }, 300);
-      currentExplorerChannelId = null;
-      channelMessages = [];
-      selectedMessage = null;
+    function closeExplorer() {
+      document.getElementById('exp-overlay').classList.remove('open');
+      expMessages = [];
+      selectedMsg = null;
     }
 
-    // Helper to escape HTML characters
-    function escapeHtml(str) {
-      if (!str) return '';
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
+    function resetDetail() {
+      selectedMsg = null;
+      document.getElementById('exp-col-detail').innerHTML = `
+        <div class="exp-detail-empty">
+          <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" opacity="0.5">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+          </svg>
+          <span>Select a message</span>
+        </div>`;
+      document.getElementById('json-pre').textContent = '// Select a message';
     }
 
-    function getMediaIconAndLabel(mediaType) {
-      switch (mediaType) {
-        case 'photo': return '📷 Photo';
-        case 'video': return '🎥 Video';
-        case 'audio': return '🎵 Audio';
-        case 'voice': return '🎤 Voice';
-        case 'document': return '📄 Document';
-        default: return '📎 Media';
-      }
+    function mediaLabel(t) {
+      return { photo: '📷 Photo', video: '🎥 Video', audio: '🎵 Audio', voice: '🎤 Voice', document: '📄 Document' }[t] || '📎 Media';
     }
 
-    function renderMessagesList(messages) {
-      const container = document.getElementById('msg-list-items');
-      if (!messages || messages.length === 0) {
-        container.innerHTML = '<div style="padding: 2rem; text-align: center; color: var(--text-muted)">No messages imported yet.</div>';
+    function renderMsgList(msgs) {
+      const el = document.getElementById('exp-list-scroll');
+      if (!msgs || !msgs.length) {
+        el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">No messages yet.</div>';
         return;
       }
-
-      container.innerHTML = messages.map((msg, index) => {
-        const json = msg.telegram_json || {};
-        const text = json.text || '';
-        const date = formatTime(msg.message_date);
-        
-        let badgeHtml = '';
-        if (json.media) {
-          badgeHtml = `<span class="msg-item-badge">${getMediaIconAndLabel(json.media.media_type)}</span>`;
-        }
-
-        const snippet = text.trim() ? escapeHtml(text) : '<i>No text content</i>';
-
+      el.innerHTML = msgs.map((m, i) => {
+        const j = m.telegram_json || {};
+        const snippet = (j.text || '').trim() || '<em>No text</em>';
+        const tag = j.media
+          ? `<span class="exp-media-tag">${mediaLabel(j.media.media_type)}</span>` : '';
         return `
-          <div class="msg-list-item" id="msg-item-${msg.message_id}" onclick="selectMessage(${index})">
-            <div class="msg-item-meta">
-              <span>ID: ${msg.message_id}</span>
-              <span>${date}</span>
+          <div class="exp-msg-item" id="mi-${m.message_id}" onclick="selectMsg(${i})">
+            <div class="exp-msg-meta">
+              <span>#${m.message_id}</span>
+              <span>${fmtDate(m.message_date)}</span>
             </div>
-            <div class="msg-item-snippet">${snippet}</div>
-            ${badgeHtml}
-          </div>
-        `;
+            <div class="exp-msg-snippet">${esc(snippet)}</div>
+            ${tag}
+          </div>`;
       }).join('');
     }
 
-    function clearActiveMessage() {
-      selectedMessage = null;
-      document.getElementById('msg-detail-col').innerHTML = `
-        <div class="msg-detail-empty">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-          </svg>
-          <p>Select a message from the list to view media and JSON data</p>
-        </div>
-      `;
-      document.getElementById('json-code').innerText = '// Select a message to view raw data';
-    }
+    function selectMsg(i) {
+      document.querySelectorAll('.exp-msg-item').forEach(el => el.classList.remove('active'));
+      const m = expMessages[i];
+      selectedMsg = m;
+      const itemEl = document.getElementById(`mi-${m.message_id}`);
+      if (itemEl) itemEl.classList.add('active');
 
-    function formatBytes(bytes) {
-      if (bytes === 0) return '0 Bytes';
-      const k = 1024;
-      const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
+      const j = m.telegram_json || {};
+      document.getElementById('json-pre').textContent = JSON.stringify(m, null, 2);
 
-    function selectMessage(index) {
-      // Remove active class from previous
-      const items = document.querySelectorAll('.msg-list-item');
-      items.forEach(item => item.classList.remove('active'));
+      let mediaBlock = '';
+      if (m.media_key && j.media) {
+        const url   = `/api/media?key=${encodeURIComponent(m.media_key)}`;
+        const dlUrl = url + '&download=true';
+        const fname = j.media.file_name || 'file';
+        const mime  = j.media.mime_type || '';
+        const size  = fmtBytes(j.media.file_size);
 
-      const msg = channelMessages[index];
-      selectedMessage = msg;
-
-      const activeItem = document.getElementById(`msg-item-${msg.message_id}`);
-      if (activeItem) {
-        activeItem.classList.add('active');
-      }
-
-      const json = msg.telegram_json || {};
-      const text = json.text || '';
-      
-      // Setup JSON side panel
-      document.getElementById('json-code').innerText = JSON.stringify(msg, null, 2);
-
-      // Setup details side
-      const detailCol = document.getElementById('msg-detail-col');
-      
-      let mediaHtml = '';
-      if (msg.media_key && json.media) {
-        const mediaUrl = `/api/media?key=${encodeURIComponent(msg.media_key)}`;
-        const downloadUrl = `${mediaUrl}&download=true`;
-        const fileName = json.media.file_name || 'file';
-        const fileSizeBytes = json.media.file_size || 0;
-        const fileSizeStr = formatBytes(fileSizeBytes);
-        const mime = json.media.mime_type || '';
-
-        let playerHtml = '';
+        let preview = `<div style="padding:20px;color:var(--text-3);font-size:13px;">📄 ${esc(fname)}</div>`;
         if (mime.startsWith('image/')) {
-          playerHtml = `<img src="${mediaUrl}" alt="${escapeHtml(fileName)}">`;
+          preview = `<img src="${url}" alt="${esc(fname)}" style="max-width:100%;max-height:320px;object-fit:contain;">`;
         } else if (mime.startsWith('video/')) {
-          playerHtml = `<video src="${mediaUrl}" controls></video>`;
+          preview = `<video src="${url}" controls style="width:100%;max-height:320px;"></video>`;
         } else if (mime.startsWith('audio/')) {
-          playerHtml = `<audio src="${mediaUrl}" controls></audio>`;
-        } else {
-          // Document or unknown format
-          playerHtml = `
-            <div class="media-doc-card">
-              <span class="media-doc-icon">📄</span>
-              <div class="media-doc-info">
-                <span class="media-doc-name">${escapeHtml(fileName)}</span>
-                <span class="media-doc-size">${fileSizeStr} • ${escapeHtml(mime)}</span>
-              </div>
-            </div>
-          `;
+          preview = `<audio src="${url}" controls style="width:100%;padding:16px;"></audio>`;
         }
 
-        mediaHtml = `
-          <div class="media-player-container">
-            <h4 style="font-family: 'Outfit', sans-serif; font-size: 1rem; font-weight: 600;">Media Player / File Preview</h4>
-            <div class="media-preview-box">
-              ${playerHtml}
-            </div>
-            <div class="media-actions">
-              <a href="${downloadUrl}" class="media-download-btn" target="_blank">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+        mediaBlock = `
+          <div class="media-shell">
+            <div class="media-preview">${preview}</div>
+            <div class="media-footer">
+              <div>
+                <div class="media-fname">${esc(fname)}</div>
+                <div class="media-fmeta">${size} · ${esc(mime)}</div>
+              </div>
+              <a class="media-dl" href="${dlUrl}" target="_blank">
+                <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                 </svg>
-                Download Media (${fileSizeStr})
+                Download
               </a>
             </div>
-          </div>
-        `;
+          </div>`;
       }
 
-      detailCol.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <h3 style="font-family: 'Outfit', sans-serif; font-weight: 700;">Message ID: ${msg.message_id}</h3>
-          <span style="font-size: 0.85rem; color: var(--text-muted);">${formatTime(msg.message_date)}</span>
+      document.getElementById('exp-col-detail').innerHTML = `
+        <div class="exp-block">
+          <p class="exp-block-lbl">Message #${m.message_id} · ${fmtDate(m.message_date)}</p>
+          <div class="exp-msg-text">${esc(j.text || '') || '<span style="color:var(--text-3);font-style:italic;">No text content</span>'}</div>
         </div>
-        
-        <div class="detail-card">
-          <div class="detail-text">${escapeHtml(text) || '<span style="color: var(--text-muted); font-style: italic;">No text content</span>'}</div>
-        </div>
-
-        ${mediaHtml}
-      `;
+        ${mediaBlock}`;
     }
 
-    async function copyJsonToClipboard() {
-      if (!selectedMessage) return;
-      const jsonText = JSON.stringify(selectedMessage, null, 2);
-      try {
-        await navigator.clipboard.writeText(jsonText);
-        const copyBtn = document.getElementById('json-copy-btn');
-        const origText = copyBtn.innerHTML;
-        copyBtn.innerHTML = `
-          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3" style="color: #34d399;">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-          </svg> Copied!
-        `;
-        setTimeout(() => {
-          copyBtn.innerHTML = origText;
-        }, 1500);
-      } catch (err) {
-        console.error('Failed to copy JSON:', err);
-      }
+    async function copyJson() {
+      if (!selectedMsg) return;
+      await navigator.clipboard.writeText(JSON.stringify(selectedMsg, null, 2));
+      const btn = document.getElementById('json-copy-btn');
+      const orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => btn.textContent = orig, 1400);
     }
 
-    // Load progress initially and poll every 2 seconds
-    fetchProgress();
-    setInterval(fetchProgress, 2000);
+    // Close explorer on Escape
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closeExplorer();
+    });
+
+    // Close on backdrop click
+    document.getElementById('exp-overlay').addEventListener('click', e => {
+      if (e.target === e.currentTarget) closeExplorer();
+    });
   </script>
 
-  <!-- Message Explorer Overlay -->
-  <div class="explorer-overlay" id="explorer-overlay">
-    <div class="explorer-container">
-      <div class="explorer-header">
-        <div class="explorer-title">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="color: var(--accent);">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 100-6 3 3 0 000 6z" />
-          </svg>
-          <span id="explorer-channel-title">Channel Explorer</span>
-        </div>
-        <button class="explorer-close-btn" onclick="closeChannelExplorer()">✕</button>
-      </div>
-      <div class="explorer-body">
-        <!-- Col 1: Messages list -->
-        <div class="msg-list-col">
-          <div class="msg-list-header">Imported Messages</div>
-          <div class="msg-list-items" id="msg-list-items"></div>
-        </div>
-        
-        <!-- Col 2: Active message details & player -->
-        <div class="msg-detail-col" id="msg-detail-col">
-          <!-- Populated dynamically -->
-        </div>
-
-        <!-- Col 3: JSON inspector -->
-        <div class="json-col">
-          <div class="json-header">
-            <span>JSON payload</span>
-            <button class="json-copy-btn" id="json-copy-btn" onclick="copyJsonToClipboard()">
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-              </svg>
-              Copy
-            </button>
-          </div>
-          <div class="json-content-wrapper">
-            <pre class="json-code" id="json-code"></pre>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
 </body>
 </html>
