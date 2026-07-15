@@ -796,6 +796,7 @@
     const statMsgs  = document.getElementById('stat-msgs');
     const statChans = document.getElementById('stat-chans');
     const statActive= document.getElementById('stat-active');
+    let trackedChannels = []; // Cache of tracked channels for duplicate detection
 
     // ── Utils ────────────────────────────────────────────────
     const fmt = n => Number(n || 0).toLocaleString();
@@ -830,8 +831,29 @@
     // ── Add channel ──────────────────────────────────────────
     addForm.addEventListener('submit', async e => {
       e.preventDefault();
-      const username = chInput.value.trim();
-      if (!username) return;
+      const usernameInput = chInput.value.trim();
+      if (!usernameInput) return;
+
+      const cleanUsername = usernameInput
+        .replace(/^(https?:\/\/)?(www\.)?t\.me\//, '')
+        .replace(/^@/, '')
+        .trim();
+
+      const usernameRegex = /^[a-zA-Z0-9_]{5,32}$/;
+      if (!usernameRegex.test(cleanUsername)) {
+        showBanner('Invalid Telegram username. It must be between 5 and 32 characters and contain only letters, numbers, and underscores.', 'error');
+        return;
+      }
+
+      // Check if already in the tracked list
+      const alreadyTracked = trackedChannels.some(ch => 
+        ch.channel_username && ch.channel_username.toLowerCase() === cleanUsername.toLowerCase()
+      );
+      if (alreadyTracked) {
+        showBanner(`Channel @${cleanUsername} is already being tracked.`, 'error');
+        return;
+      }
+
       addBtn.disabled = true;
       addBtn.textContent = 'Checking…';
       hideBanner();
@@ -839,7 +861,7 @@
         const res  = await fetch('/api/channels', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username })
+          body: JSON.stringify({ username: cleanUsername })
         });
         const data = await res.json();
         if (data.success) {
@@ -863,6 +885,7 @@
     let _channelKey = '';   // serialised channel ids to detect structural changes
 
     function renderChannels(channels) {
+      trackedChannels = channels || [];
       if (!channels || channels.length === 0) {
         _channelKey = '';
         chList.innerHTML = '<div class="empty-row">No channels tracked yet — add one above.</div>';

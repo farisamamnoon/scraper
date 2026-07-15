@@ -50,13 +50,31 @@ export function createServer(
         return;
       }
 
-      const cleanUsername = username.trim().replace(/^https:\/\/t\.me\//, '').replace('@', '');
-      if (cleanUsername.length === 0) {
-        res.status(400).json({ success: false, error: 'Invalid channel username.' });
+      const cleanUsername = username.trim()
+        .replace(/^(https?:\/\/)?(www\.)?t\.me\//, '')
+        .replace(/^@/, '')
+        .trim();
+
+      const usernameRegex = /^[a-zA-Z0-9_]{5,32}$/;
+      if (!usernameRegex.test(cleanUsername)) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid Telegram username. It must be between 5 and 32 characters and contain only letters, numbers, and underscores.'
+        });
         return;
       }
 
       logger.info(`REST API: Request to add channel "${cleanUsername}"`);
+
+      // Check if the channel username is already being tracked
+      const existingChannel = await dbService.getChannelByUsername(cleanUsername);
+      if (existingChannel) {
+        res.status(409).json({
+          success: false,
+          error: `Channel @${existingChannel.channel_username || cleanUsername} is already being tracked.`
+        });
+        return;
+      }
 
       // Try resolving entity on Telegram to ensure correctness
       let channelEntity;
@@ -74,6 +92,17 @@ export function createServer(
       const channelId = channelEntity.id.toString();
       const title = channelEntity.title || '';
       const finalUsername = channelEntity.username || cleanUsername;
+
+      // Check if the resolved channel ID is already being tracked
+      const existingById = await dbService.getChannelProgress(channelId);
+      if (existingById) {
+        await dbService.upsertChannel(channelId, finalUsername, title, existingById.status);
+        res.status(409).json({
+          success: false,
+          error: `Channel "${title}" (@${finalUsername}) is already being tracked.`
+        });
+        return;
+      }
 
       // Register the channel in postgres as pending
       await dbService.upsertChannel(channelId, finalUsername, title, 'pending');

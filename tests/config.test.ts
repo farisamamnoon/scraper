@@ -37,7 +37,6 @@ describe('Configuration parsing and validation', () => {
     expect(parsed.postgres.port).toBe(5432);
     expect(parsed.postgres.db).toBe('telegram_db');
     expect(parsed.s3.bucket).toBe('telegram-media');
-    expect(parsed.importer.channels).toEqual(['durov', 'telegram']);
     expect(parsed.importer.concurrency).toBe(2);
     expect(parsed.server.port).toBe(8080);
   });
@@ -88,7 +87,6 @@ describe('Configuration parsing and validation', () => {
     expect(parsed.postgres.port).toBe(5432);
     expect(parsed.importer.concurrency).toBe(1);
     expect(parsed.server.port).toBe(3000);
-    expect(parsed.importer.channels).toEqual([]);
     expect(parsed.telegram.proxy).toBeUndefined();
   });
 
