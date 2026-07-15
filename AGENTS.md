@@ -207,3 +207,35 @@ All files import `logger` from `../logger` (or `./logger`). Log levels:
 - `logger.warn` — recoverable issues (FloodWait, retries, resets)
 - `logger.error` — failures (always pass error object as 2nd argument)
 - `logger.debug` — verbose internals (S3 keys, temp paths, batch IDs)
+
+---
+
+## Dashboard Frontend Rules
+
+**File:** `public/index.html` (single-file vanilla HTML/CSS/JS dashboard)
+
+Before making any UI changes, read the three rule files in `.agents/rules/`:
+
+| Rule file | What it governs |
+|---|---|
+| `dashboard-ui-palette.md` | Color tokens, forbidden patterns (glassmorphism, indigo gradients), status pill CSS |
+| `dashboard-ui-typography-layout.md` | Font family (IBM Plex Sans + Mono), type scale, topbar height, border-radius scale, interaction patterns |
+| `dashboard-ui-no-flicker-polling.md` | Keyed in-place DOM update pattern for the 2-second polling loop |
+
+### Critical UI Don'ts (summary — full detail in rule files)
+
+1. **Do NOT use indigo/purple gradients** — rejected by user as "AI-ish"
+2. **Do NOT use glassmorphism** (`backdrop-filter: blur` on panels) — same reason
+3. **Do NOT replace `innerHTML` on every poll tick** — causes visible row re-animation (flicker)
+4. **Do NOT expand the header** — it is a 48px sticky topbar, not a hero section
+5. **Do NOT use `Outfit` or `Inter` as the primary font** — use IBM Plex Sans + IBM Plex Mono
+6. **Do NOT use `transform: translateY(-4px)` on hover** — too "template-ish"
+
+### Architecture of `public/index.html`
+
+- All CSS is inline in `<style>` — no external stylesheet
+- All JS is inline in `<script>` — no module bundler
+- CSS custom properties (tokens) defined in `:root` — always use vars, never hardcoded hex in component rules
+- `fetchProgress()` polls `/api/progress` every 2000ms; uses smart diff (`_channelKey`) to avoid DOM rebuild
+- Channel rows use `id="cr-${channel_id}"` for in-place patching; patchable fields carry `.js-msgs` and `.js-lastid` classes
+- Explorer modal is a full-viewport overlay opened by `openExplorer(channelId, title)`
