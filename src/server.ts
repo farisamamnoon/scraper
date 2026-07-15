@@ -50,13 +50,31 @@ export function createServer(
         return;
       }
 
-      const cleanUsername = username.trim().replace(/^https:\/\/t\.me\//, '').replace('@', '');
-      if (cleanUsername.length === 0) {
-        res.status(400).json({ success: false, error: 'Invalid channel username.' });
+      const cleanUsername = username.trim()
+        .replace(/^(https?:\/\/)?(www\.)?t\.me\//, '')
+        .replace(/^@/, '')
+        .trim();
+
+      const usernameRegex = /^[a-zA-Z0-9_]{5,32}$/;
+      if (!usernameRegex.test(cleanUsername)) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid Telegram username. It must be between 5 and 32 characters and contain only letters, numbers, and underscores.'
+        });
         return;
       }
 
       logger.info(`REST API: Request to add channel "${cleanUsername}"`);
+
+      // Check if the channel username is already being tracked
+      const existingChannel = await dbService.getChannelByUsername(cleanUsername);
+      if (existingChannel) {
+        res.status(409).json({
+          success: false,
+          error: `Channel @${existingChannel.channel_username || cleanUsername} is already being tracked.`
+        });
+        return;
+      }
 
       // Try resolving entity on Telegram to ensure correctness
       let channelEntity;
@@ -74,6 +92,17 @@ export function createServer(
       const channelId = channelEntity.id.toString();
       const title = channelEntity.title || '';
       const finalUsername = channelEntity.username || cleanUsername;
+
+      // Check if the resolved channel ID is already being tracked
+      const existingById = await dbService.getChannelProgress(channelId);
+      if (existingById) {
+        await dbService.upsertChannel(channelId, finalUsername, title, existingById.status);
+        res.status(409).json({
+          success: false,
+          error: `Channel "${title}" (@${finalUsername}) is already being tracked.`
+        });
+        return;
+      }
 
       // Register the channel in postgres as pending
       await dbService.upsertChannel(channelId, finalUsername, title, 'pending');
@@ -105,6 +134,46 @@ export function createServer(
       res.json({
         success: true,
         messages
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
+   * DELETE /api/channels/:channelId
+   * Deletes a channel and all its stored messages.
+   */
+  app.delete('/api/channels/:channelId', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { channelId } = req.params;
+      if (!channelId) {
+        res.status(400).json({ success: false, error: 'Channel ID is required.' });
+        return;
+      }
+
+      // Check if channel is currently importing
+      if (importer.isChannelRunning(channelId)) {
+        res.status(400).json({
+          success: false,
+          error: 'Cannot delete a channel while its import is in progress.'
+        });
+        return;
+      }
+
+      // Check if channel exists in DB
+      const progress = await dbService.getChannelProgress(channelId);
+      if (!progress) {
+        res.status(404).json({ success: false, error: 'Channel not found.' });
+        return;
+      }
+
+      await dbService.deleteChannel(channelId);
+      logger.info(`REST API: Channel @${progress.channel_username || channelId} (${progress.title}) deleted.`);
+
+      res.json({
+        success: true,
+        message: 'Channel deleted successfully.'
       });
     } catch (err) {
       next(err);
