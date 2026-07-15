@@ -406,6 +406,30 @@
       color: #fca5a5;
     }
 
+    .exp-delete {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text-2);
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
+    }
+
+    .exp-delete:hover {
+      background: rgba(239, 68, 68, 0.16);
+      border-color: rgba(239, 68, 68, 0.4);
+      color: #ef4444;
+    }
+
+    .exp-delete:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
     .exp-body {
       display: grid;
       grid-template-columns: 268px 1fr 340px;
@@ -748,7 +772,12 @@
   <div class="explorer-overlay" id="exp-overlay">
     <div class="exp-box">
       <div class="exp-topbar">
-        <span class="exp-title" id="exp-title-text">Channel Explorer</span>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button class="exp-delete" id="exp-delete-btn" onclick="deleteCurrentChannel()" title="Delete Channel">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash2-icon lucide-trash-2"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
+          <span class="exp-title" id="exp-title-text">Channel Explorer</span>
+        </div>
         <button class="exp-close" id="exp-close-btn" onclick="closeExplorer()">✕</button>
       </div>
       <div class="exp-body">
@@ -962,10 +991,12 @@
     setInterval(fetchProgress, 2000);
 
     // ── Explorer ─────────────────────────────────────────────
+    let currentChannelId = null;
     let expMessages = [];
     let selectedMsg = null;
 
     async function openExplorer(channelId, title) {
+      currentChannelId = channelId;
       document.getElementById('exp-title-text').textContent = title;
       document.getElementById('exp-overlay').classList.add('open');
       document.getElementById('exp-list-scroll').innerHTML =
@@ -985,8 +1016,37 @@
 
     function closeExplorer() {
       document.getElementById('exp-overlay').classList.remove('open');
+      currentChannelId = null;
       expMessages = [];
       selectedMsg = null;
+    }
+
+    async function deleteCurrentChannel() {
+      if (!currentChannelId) return;
+      const title = document.getElementById('exp-title-text').textContent;
+      if (!confirm(`Are you sure you want to delete channel "${title}" and all its messages? This action cannot be undone.`)) {
+        return;
+      }
+
+      const btn = document.getElementById('exp-delete-btn');
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/channels/${currentChannelId}`, {
+          method: 'DELETE'
+        });
+        const data = await res.json();
+        if (data.success) {
+          showBanner(`Channel "${title}" has been deleted.`, 'success');
+          closeExplorer();
+          await fetchProgress();
+        } else {
+          alert(data.error || 'Failed to delete channel.');
+        }
+      } catch (err) {
+        alert('Network error — could not reach the server.');
+      } finally {
+        btn.disabled = false;
+      }
     }
 
     function resetDetail() {

@@ -264,4 +264,24 @@ export class DbService {
     const res = await this.pool.query(query, [channelId.toString()]);
     return res.rows;
   }
+
+  /**
+   * Deletes a channel and all its stored messages in a transaction.
+   */
+  async deleteChannel(channelId: string | number | bigint): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM telegram_messages WHERE channel_id = $1', [channelId.toString()]);
+      await client.query('DELETE FROM telegram_channels WHERE channel_id = $1', [channelId.toString()]);
+      await client.query('COMMIT');
+      logger.info(`Deleted channel ${channelId} and its messages from database.`);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error(`Failed to delete channel ${channelId} from database`, error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 }

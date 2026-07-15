@@ -20,9 +20,12 @@ describe('Express API Server Endpoints', () => {
       getChannelByUsername: jest.fn().mockResolvedValue(null),
       getChannelProgress: jest.fn().mockResolvedValue(null),
       getChannelMessages: jest.fn(),
+      deleteChannel: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<DbService>;
 
-    mockImporter = {} as unknown as jest.Mocked<Importer>;
+    mockImporter = {
+      isChannelRunning: jest.fn().mockReturnValue(false),
+    } as unknown as jest.Mocked<Importer>;
 
     mockTelegramService = {
       getChannelEntity: jest.fn(),
@@ -170,6 +173,52 @@ describe('Express API Server Endpoints', () => {
 
       expect(response.body.success).toBe(false);
       expect(response.body.error).toContain('Invalid Telegram username');
+    });
+  });
+
+  describe('DELETE /api/channels/:channelId', () => {
+    it('should successfully delete an idle channel', async () => {
+      mockImporter.isChannelRunning.mockReturnValue(false);
+      mockDbService.getChannelProgress.mockResolvedValue({
+        channel_id: '123456789',
+        channel_username: 'telegram',
+        title: 'Telegram News',
+        status: 'completed',
+      } as any);
+
+      const response = await request(app)
+        .delete('/api/channels/123456789')
+        .expect('Content-Type', /json/)
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.message).toBe('Channel deleted successfully.');
+      expect(mockDbService.deleteChannel).toHaveBeenCalledWith('123456789');
+    });
+
+    it('should return 400 Bad Request when deleting a running channel', async () => {
+      mockImporter.isChannelRunning.mockReturnValue(true);
+
+      const response = await request(app)
+        .delete('/api/channels/123456789')
+        .expect(400);
+
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toContain('Cannot delete a channel while its import is in progress');
+      expect(mockDbService.deleteChannel).not.toHaveBeenCalled();
+    });
+
+    it('should return 404 Not Found when deleting a non-existent channel', async () => {
+      mockImporter.isChannelRunning.mockReturnValue(false);
+      mockDbService.getChannelProgress.mockResolvedValue(null);
+
+      const response = await request(app)
+        .delete('/api/channels/999999')
+        .expect(404);
+
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toContain('Channel not found');
+      expect(mockDbService.deleteChannel).not.toHaveBeenCalled();
     });
   });
 });

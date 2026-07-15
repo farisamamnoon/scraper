@@ -48,6 +48,13 @@ export class Importer {
   }
 
   /**
+   * Checks if a channel is currently being processed by the importer.
+   */
+  isChannelRunning(channelId: string): boolean {
+    return this.runningChannels.has(channelId);
+  }
+
+  /**
    * Single tick of the background scheduler.
    * Dispatches pending channel imports.
    */

@@ -141,6 +141,46 @@ export function createServer(
   });
 
   /**
+   * DELETE /api/channels/:channelId
+   * Deletes a channel and all its stored messages.
+   */
+  app.delete('/api/channels/:channelId', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { channelId } = req.params;
+      if (!channelId) {
+        res.status(400).json({ success: false, error: 'Channel ID is required.' });
+        return;
+      }
+
+      // Check if channel is currently importing
+      if (importer.isChannelRunning(channelId)) {
+        res.status(400).json({
+          success: false,
+          error: 'Cannot delete a channel while its import is in progress.'
+        });
+        return;
+      }
+
+      // Check if channel exists in DB
+      const progress = await dbService.getChannelProgress(channelId);
+      if (!progress) {
+        res.status(404).json({ success: false, error: 'Channel not found.' });
+        return;
+      }
+
+      await dbService.deleteChannel(channelId);
+      logger.info(`REST API: Channel @${progress.channel_username || channelId} (${progress.title}) deleted.`);
+
+      res.json({
+        success: true,
+        message: 'Channel deleted successfully.'
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
    * GET /api/media
    * Streams a media object from S3. Supports inline display or download.
    */
