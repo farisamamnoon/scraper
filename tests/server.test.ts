@@ -1,9 +1,14 @@
 import request from 'supertest';
+import crypto from 'crypto';
 import { createServer } from '../src/server';
 import { DbService } from '../src/services/db.service';
 import { Importer } from '../src/importer';
 import { TelegramService } from '../src/services/telegram.service';
 import { S3Service } from '../src/services/s3.service';
+
+const testPassword = 'testpassword';
+const testToken = crypto.createHash('sha256').update(testPassword).digest('hex');
+const authCookie = `dashboard_token=${testToken}`;
 
 describe('Express API Server Endpoints', () => {
   let mockDbService: jest.Mocked<DbService>;
@@ -35,11 +40,78 @@ describe('Express API Server Endpoints', () => {
       getObjectStream: jest.fn(),
     } as unknown as jest.Mocked<S3Service>;
 
-    app = createServer(mockDbService, mockImporter, mockTelegramService, mockS3Service);
+    app = createServer(mockDbService, mockImporter, mockTelegramService, mockS3Service, testPassword);
+  });
+
+  describe('Authentication Enforcement', () => {
+    it('should redirect unauthenticated request for root / to /login.html', async () => {
+      await request(app)
+        .get('/')
+        .expect(302)
+        .expect('Location', '/login.html');
+    });
+
+    it('should redirect unauthenticated request for /index.html to /login.html', async () => {
+      await request(app)
+        .get('/index.html')
+        .expect(302)
+        .expect('Location', '/login.html');
+    });
+
+    it('should redirect authenticated request for /login.html to /', async () => {
+      await request(app)
+        .get('/login.html')
+        .set('Cookie', authCookie)
+        .expect(302)
+        .expect('Location', '/');
+    });
+
+    it('should return 401 Unauthorized for unauthenticated API requests', async () => {
+      const response = await request(app)
+        .get('/api/progress')
+        .expect(401);
+
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toBe('Unauthorized');
+    });
+  });
+
+  describe('POST /api/auth/login', () => {
+    it('should return success and Set-Cookie header for correct password', async () => {
+      const response = await request(app)
+        .post('/api/auth/login')
+        .send({ password: testPassword })
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.headers['set-cookie']).toBeDefined();
+      expect(response.headers['set-cookie'][0]).toContain(`dashboard_token=${testToken}`);
+    });
+
+    it('should return 401 Unauthorized for incorrect password', async () => {
+      const response = await request(app)
+        .post('/api/auth/login')
+        .send({ password: 'wrongpassword' })
+        .expect(401);
+
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toBe('Incorrect password.');
+      expect(response.headers['set-cookie']).toBeUndefined();
+    });
+
+    it('should return 400 Bad Request for missing password', async () => {
+      const response = await request(app)
+        .post('/api/auth/login')
+        .send({})
+        .expect(400);
+
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toBe('Password is required.');
+    });
   });
 
   describe('GET /api/progress', () => {
-    it('should return channels list and database global statistics', async () => {
+    it('should return channels list and database global statistics when authenticated', async () => {
       const mockChannels = [
         {
           channel_id: '123456789',
@@ -64,6 +136,7 @@ describe('Express API Server Endpoints', () => {
 
       const response = await request(app)
         .get('/api/progress')
+        .set('Cookie', authCookie)
         .expect('Content-Type', /json/)
         .expect(200);
 
@@ -75,7 +148,7 @@ describe('Express API Server Endpoints', () => {
   });
 
   describe('POST /api/channels', () => {
-    it('should successfully register a valid public channel username', async () => {
+    it('should successfully register a valid public channel username when authenticated', async () => {
       const mockEntity = {
         id: 123456789n,
         title: 'Telegram News',
@@ -87,6 +160,7 @@ describe('Express API Server Endpoints', () => {
 
       const response = await request(app)
         .post('/api/channels')
+        .set('Cookie', authCookie)
         .send({ username: 'telegram' })
         .expect('Content-Type', /json/)
         .expect(200);
@@ -100,9 +174,10 @@ describe('Express API Server Endpoints', () => {
       expect(mockDbService.upsertChannel).toHaveBeenCalledWith('123456789', 'telegram', 'Telegram News', 'pending');
     });
 
-    it('should return 400 error if username is empty or missing', async () => {
+    it('should return 400 error if username is empty or missing when authenticated', async () => {
       const response = await request(app)
         .post('/api/channels')
+        .set('Cookie', authCookie)
         .send({ username: '' })
         .expect(400);
 
@@ -110,11 +185,12 @@ describe('Express API Server Endpoints', () => {
       expect(response.body.error).toContain('username is required');
     });
 
-    it('should return 400 error if telegram channel resolution fails', async () => {
+    it('should return 400 error if telegram channel resolution fails when authenticated', async () => {
       mockTelegramService.getChannelEntity.mockRejectedValue(new Error('Channel not found'));
 
       const response = await request(app)
         .post('/api/channels')
+        .set('Cookie', authCookie)
         .send({ username: 'some_invalid_channel' })
         .expect(400);
 
@@ -122,7 +198,7 @@ describe('Express API Server Endpoints', () => {
       expect(response.body.error).toContain('Could not resolve Telegram channel');
     });
 
-    it('should return 409 Conflict if channel username is already tracked', async () => {
+    it('should return 409 Conflict if channel username is already tracked when authenticated', async () => {
       mockDbService.getChannelByUsername.mockResolvedValue({
         channel_id: '123456789',
         channel_username: 'telegram',
@@ -132,6 +208,7 @@ describe('Express API Server Endpoints', () => {
 
       const response = await request(app)
         .post('/api/channels')
+        .set('Cookie', authCookie)
         .send({ username: 'telegram' })
         .expect(409);
 
@@ -140,7 +217,7 @@ describe('Express API Server Endpoints', () => {
       expect(mockTelegramService.getChannelEntity).not.toHaveBeenCalled();
     });
 
-    it('should return 409 Conflict if resolved channel ID is already tracked', async () => {
+    it('should return 409 Conflict if resolved channel ID is already tracked when authenticated', async () => {
       const mockEntity = {
         id: 123456789n,
         title: 'Telegram News',
@@ -157,6 +234,7 @@ describe('Express API Server Endpoints', () => {
 
       const response = await request(app)
         .post('/api/channels')
+        .set('Cookie', authCookie)
         .send({ username: 'telegram' })
         .expect(409);
 
@@ -165,9 +243,10 @@ describe('Express API Server Endpoints', () => {
       expect(mockDbService.upsertChannel).toHaveBeenCalledWith('123456789', 'telegram', 'Telegram News', 'completed');
     });
 
-    it('should return 400 error if username format is invalid', async () => {
+    it('should return 400 error if username format is invalid when authenticated', async () => {
       const response = await request(app)
         .post('/api/channels')
+        .set('Cookie', authCookie)
         .send({ username: 'ab' })
         .expect(400);
 
@@ -177,7 +256,7 @@ describe('Express API Server Endpoints', () => {
   });
 
   describe('DELETE /api/channels/:channelId', () => {
-    it('should successfully delete an idle channel', async () => {
+    it('should successfully delete an idle channel when authenticated', async () => {
       mockImporter.isChannelRunning.mockReturnValue(false);
       mockDbService.getChannelProgress.mockResolvedValue({
         channel_id: '123456789',
@@ -188,6 +267,7 @@ describe('Express API Server Endpoints', () => {
 
       const response = await request(app)
         .delete('/api/channels/123456789')
+        .set('Cookie', authCookie)
         .expect('Content-Type', /json/)
         .expect(200);
 
@@ -196,11 +276,12 @@ describe('Express API Server Endpoints', () => {
       expect(mockDbService.deleteChannel).toHaveBeenCalledWith('123456789');
     });
 
-    it('should return 400 Bad Request when deleting a running channel', async () => {
+    it('should return 400 Bad Request when deleting a running channel when authenticated', async () => {
       mockImporter.isChannelRunning.mockReturnValue(true);
 
       const response = await request(app)
         .delete('/api/channels/123456789')
+        .set('Cookie', authCookie)
         .expect(400);
 
       expect(response.body.success).toBe(false);
@@ -208,12 +289,13 @@ describe('Express API Server Endpoints', () => {
       expect(mockDbService.deleteChannel).not.toHaveBeenCalled();
     });
 
-    it('should return 404 Not Found when deleting a non-existent channel', async () => {
+    it('should return 404 Not Found when deleting a non-existent channel when authenticated', async () => {
       mockImporter.isChannelRunning.mockReturnValue(false);
       mockDbService.getChannelProgress.mockResolvedValue(null);
 
       const response = await request(app)
         .delete('/api/channels/999999')
+        .set('Cookie', authCookie)
         .expect(404);
 
       expect(response.body.success).toBe(false);

@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
+import crypto from 'crypto';
 import { DbService } from './services/db.service';
 import { Importer } from './importer';
 import { TelegramService } from './services/telegram.service';
@@ -10,20 +11,76 @@ export function createServer(
   dbService: DbService,
   importer: Importer,
   telegramService: TelegramService,
-  s3Service: S3Service
+  s3Service: S3Service,
+  dashboardPassword: string
 ) {
+  const expectedToken = crypto.createHash('sha256').update(dashboardPassword).digest('hex');
+
+  const isAuthed = (req: Request): boolean => {
+    const cookieHeader = req.headers.cookie;
+    if (!cookieHeader) return false;
+    const cookies = cookieHeader.split(';').map(c => c.trim());
+    for (const cookie of cookies) {
+      const [k, v] = cookie.split('=');
+      if (k === 'dashboard_token' && v === expectedToken) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const app = express();
 
   app.use(express.json());
 
+  // Static route authentication middleware
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (req.path === '/' || req.path === '/index.html') {
+      if (!isAuthed(req)) {
+        return res.redirect('/login.html');
+      }
+    } else if (req.path === '/login.html') {
+      if (isAuthed(req)) {
+        return res.redirect('/');
+      }
+    }
+    next();
+  });
+
   // Serve static UI assets
   app.use(express.static(path.join(process.cwd(), 'public')));
+
+  // Login endpoint
+  app.post('/api/auth/login', (req: Request, res: Response) => {
+    const { password } = req.body;
+    if (!password || typeof password !== 'string') {
+      res.status(400).json({ success: false, error: 'Password is required.' });
+      return;
+    }
+
+    if (password === dashboardPassword) {
+      // Set HttpOnly cookie for 30 days
+      res.setHeader('Set-Cookie', `dashboard_token=${expectedToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`);
+      res.json({ success: true });
+    } else {
+      res.status(401).json({ success: false, error: 'Incorrect password.' });
+    }
+  });
+
+  // API auth middleware
+  const apiAuthMiddleware = (req: Request, res: Response, next: NextFunction) => {
+    if (!isAuthed(req)) {
+      res.status(401).json({ success: false, error: 'Unauthorized' });
+      return;
+    }
+    next();
+  };
 
   /**
    * GET /api/progress
    * Returns progress of all channels and global database statistics.
    */
-  app.get('/api/progress', async (req: Request, res: Response, next: NextFunction) => {
+  app.get('/api/progress', apiAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const channels = await dbService.getAllChannels();
       const stats = await dbService.getGlobalStats();
@@ -42,7 +99,7 @@ export function createServer(
    * POST /api/channels
    * Resolves a public Telegram channel by username, registers it, and schedules it for import.
    */
-  app.post('/api/channels', async (req: Request, res: Response, next: NextFunction) => {
+  app.post('/api/channels', apiAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { username } = req.body;
       if (!username || typeof username !== 'string') {
@@ -127,7 +184,7 @@ export function createServer(
    * GET /api/channels/:channelId/messages
    * Returns all stored messages for a specific channel.
    */
-  app.get('/api/channels/:channelId/messages', async (req: Request, res: Response, next: NextFunction) => {
+  app.get('/api/channels/:channelId/messages', apiAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { channelId } = req.params;
       const messages = await dbService.getChannelMessages(channelId);
@@ -144,7 +201,7 @@ export function createServer(
    * DELETE /api/channels/:channelId
    * Deletes a channel and all its stored messages.
    */
-  app.delete('/api/channels/:channelId', async (req: Request, res: Response, next: NextFunction) => {
+  app.delete('/api/channels/:channelId', apiAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { channelId } = req.params;
       if (!channelId) {
@@ -184,7 +241,7 @@ export function createServer(
    * GET /api/media
    * Streams a media object from S3. Supports inline display or download.
    */
-  app.get('/api/media', async (req: Request, res: Response, next: NextFunction) => {
+  app.get('/api/media', apiAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const key = req.query.key as string;
       if (!key) {
