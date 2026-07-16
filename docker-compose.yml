@@ -20,6 +20,7 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY}
       S3_BUCKET: ${S3_BUCKET}
       IMPORT_CONCURRENCY: ${IMPORT_CONCURRENCY:-1}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
       PORT: 3000
     volumes:
       - telegram_session:/app/session
