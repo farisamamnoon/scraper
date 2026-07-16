@@ -37,6 +37,7 @@ export interface Config {
   server: {
     port: number;
   };
+  dashboardPassword: string;
 }
 
 export function parseAndValidateConfig(): Config {
@@ -78,6 +79,7 @@ export function parseAndValidateConfig(): Config {
 
   const concurrencyStr = getOptional('IMPORT_CONCURRENCY', '1');
   const portStr = getOptional('PORT', '3000');
+  const dashboardPassword = getRequired('DASHBOARD_PASSWORD');
 
   if (missingVars.length > 0) {
     throw new Error(`Missing required configuration environment variables: ${missingVars.join(', ')}`);
@@ -148,7 +150,8 @@ export function parseAndValidateConfig(): Config {
     },
     server: {
       port
-    }
+    },
+    dashboardPassword
   };
 }
 

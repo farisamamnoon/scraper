@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Archive Dashboard - Login</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <style>
+    /* ── Design tokens ──────────────────────────────────────── */
+    :root {
+      --bg:          #111111;
+      --surface:     #1a1a1a;
+      --surface-2:   #222222;
+      --border:      #2d2d2d;
+      --border-2:    #3d3d3d;
+      --text:        #ededed;
+      --text-2:      #888888;
+      --text-3:      #555555;
+      --s-failed:    #ef4444;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'IBM Plex Sans', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .login-container {
+      width: 100%;
+      max-width: 360px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* ── Brand Header ────────────────────────────────────────── */
+    .brand-header {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .brand-mark {
+      width: 24px;
+      height: 24px;
+      background: var(--surface-2);
+      border: 1px solid var(--border-2);
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+
+    .brand-mark svg { display: block; }
+
+    .brand-sep {
+      width: 1px;
+      height: 16px;
+      background: var(--border-2);
+    }
+
+    .brand-name {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--text);
+    }
+
+    .brand-sub {
+      font-size: 12px;
+      color: var(--text-3);
+    }
+
+    /* ── Login Card ─────────────────────────────────────────── */
+    .login-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .form-label {
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--text-3);
+    }
+
+    .form-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 9px 13px;
+      color: var(--text);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.12s, background 0.12s;
+    }
+
+    .form-input:focus {
+      border-color: var(--border-2);
+      background: var(--surface-2);
+    }
+
+    .submit-btn {
+      background: var(--text);
+      color: var(--bg);
+      border: none;
+      border-radius: 6px;
+      padding: 10px 16px;
+      font-family: 'IBM Plex Sans', sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.12s;
+      width: 100%;
+      letter-spacing: -0.01em;
+    }
+
+    .submit-btn:hover { opacity: 0.85; }
+    .submit-btn:active { opacity: 0.7; }
+    .submit-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    /* ── Error Toast ────────────────────────────────────────── */
+    .toast {
+      display: none;
+      font-size: 13px;
+      padding: 9px 13px;
+      border-radius: 6px;
+      border-left: 3px solid;
+      background: rgba(239, 68, 68, 0.07);
+      border-color: var(--s-failed);
+      color: #fca5a5;
+    }
+
+    .toast.open {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="login-container">
+    <div class="brand-header">
+      <div class="brand-mark">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ededed" stroke-width="2.5">
+          <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <span class="brand-name">ARCHIVE</span>
+      <span class="brand-sep"></span>
+      <span class="brand-sub">LOGIN</span>
+    </div>
+
+    <form class="login-card" id="login-form">
+      <div class="toast" id="error-toast"></div>
+
+      <div class="form-group">
+        <label class="form-label" for="password">Password</label>
+        <input class="form-input" type="password" id="password" autocomplete="current-password" placeholder="••••••••" required autofocus>
+      </div>
+
+      <button class="submit-btn" type="submit" id="submit-btn">Unlock Dashboard</button>
+    </form>
+  </div>
+
+  <script>
+    const form = document.getElementById('login-form');
+    const passwordInput = document.getElementById('password');
+    const submitBtn = document.getElementById('submit-btn');
+    const errorToast = document.getElementById('error-toast');
+
+    function showError(msg) {
+      errorToast.textContent = msg;
+      errorToast.classList.add('open');
+    }
+
+    function clearError() {
+      errorToast.textContent = '';
+      errorToast.classList.remove('open');
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearError();
+
+      const password = passwordInput.value;
+      if (!password) return;
+
+      submitBtn.disabled = true;
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ password })
+        });
+
+        const data = await res.json();
+
+        if (res.ok && data.success) {
+          window.location.href = '/';
+        } else {
+          showError(data.error || 'Authentication failed.');
+        }
+      } catch (err) {
+        showError('Network error — could not reach the server.');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
