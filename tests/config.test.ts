@@ -6,6 +6,7 @@ describe('Configuration parsing and validation', () => {
   beforeEach(() => {
     jest.resetModules();
     process.env = { ...originalEnv };
+    process.env.DASHBOARD_PASSWORD = 'test_password';
   });
 
   afterAll(() => {
@@ -28,6 +29,7 @@ describe('Configuration parsing and validation', () => {
     process.env.CHANNELS = 'durov, telegram';
     process.env.IMPORT_CONCURRENCY = '2';
     process.env.PORT = '8080';
+    process.env.DASHBOARD_PASSWORD = 'test_password';
 
     const parsed = parseAndValidateConfig();
 
@@ -39,11 +41,17 @@ describe('Configuration parsing and validation', () => {
     expect(parsed.s3.bucket).toBe('telegram-media');
     expect(parsed.importer.concurrency).toBe(2);
     expect(parsed.server.port).toBe(8080);
+    expect(parsed.dashboardPassword).toBe('test_password');
   });
 
   it('should fail if required variables are missing', () => {
     process.env = {};
     expect(() => parseAndValidateConfig()).toThrow(/Missing required configuration environment variables/);
+  });
+
+  it('should fail if DASHBOARD_PASSWORD is missing', () => {
+    delete process.env.DASHBOARD_PASSWORD;
+    expect(() => parseAndValidateConfig()).toThrow(/Missing required configuration environment variables: DASHBOARD_PASSWORD/);
   });
 
   it('should fail if TELEGRAM_API_ID is not a valid integer', () => {
