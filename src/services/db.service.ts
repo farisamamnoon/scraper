@@ -1,6 +1,8 @@
 import { Pool } from 'pg';
 import { logger } from '../logger';
 
+export type ChannelStatus = 'pending' | 'running' | 'completed' | 'failed';
+
 export interface ChannelProgress {
   channel_id: string;
   channel_username: string | null;
@@ -8,11 +10,22 @@ export interface ChannelProgress {
   import_started_at: Date | null;
   import_completed_at: Date | null;
   last_processed_message_id: string | null;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: ChannelStatus;
 }
 
 export interface ChannelProgressWithCount extends ChannelProgress {
   message_count: number;
+}
+
+export interface ChannelListOptions {
+  status?: ChannelStatus;
+  limit: number;
+  offset: number;
+}
+
+export interface ChannelListResult {
+  channels: ChannelProgressWithCount[];
+  total: number;
 }
 
 export class DbService {
@@ -79,7 +92,7 @@ export class DbService {
     channelId: string | number | bigint,
     username: string | null,
     title: string | null,
-    status: 'pending' | 'running' | 'completed' | 'failed'
+    status: ChannelStatus
   ): Promise<void> {
     const query = `
       INSERT INTO telegram_channels (channel_id, channel_username, title, status)
@@ -97,7 +110,7 @@ export class DbService {
    */
   async updateChannelStatus(
     channelId: string | number | bigint,
-    status: 'pending' | 'running' | 'completed' | 'failed'
+    status: ChannelStatus
   ): Promise<void> {
     let query = '';
     const now = new Date();
@@ -235,6 +248,55 @@ export class DbService {
     `;
     const res = await this.pool.query(query);
     return res.rows;
+  }
+
+  /**
+   * Lists tracked channels with optional filtering and pagination.
+   */
+  async listChannels(options: ChannelListOptions): Promise<ChannelListResult> {
+    const whereClauses: string[] = [];
+    const params: Array<string | number> = [];
+
+    if (options.status) {
+      params.push(options.status);
+      whereClauses.push(`c.status = $${params.length}`);
+    }
+
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+    const countQuery = `
+      SELECT COUNT(*)::INTEGER as total
+      FROM telegram_channels c
+      ${whereSql};
+    `;
+    const countRes = await this.pool.query(countQuery, params);
+
+    const listParams = [...params, options.limit, options.offset];
+    const limitPlaceholder = `$${listParams.length - 1}`;
+    const offsetPlaceholder = `$${listParams.length}`;
+    const listQuery = `
+      SELECT
+        c.channel_id::TEXT,
+        c.channel_username,
+        c.title,
+        c.import_started_at,
+        c.import_completed_at,
+        c.last_processed_message_id::TEXT,
+        c.status,
+        COALESCE(COUNT(m.id), 0)::INTEGER as message_count
+      FROM telegram_channels c
+      LEFT JOIN telegram_messages m ON c.channel_id = m.channel_id
+      ${whereSql}
+      GROUP BY c.channel_id, c.channel_username, c.title, c.import_started_at, c.import_completed_at, c.last_processed_message_id, c.status
+      ORDER BY c.import_started_at DESC NULLS LAST, c.channel_username ASC
+      LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder};
+    `;
+    const listRes = await this.pool.query(listQuery, listParams);
+
+    return {
+      channels: listRes.rows,
+      total: countRes.rows[0].total
+    };
   }
 
   /**
