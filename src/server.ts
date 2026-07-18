@@ -1,7 +1,9 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import crypto from 'crypto';
+import { matchedData, query, validationResult } from 'express-validator';
 import { DbService } from './services/db.service';
+import type { ChannelStatus } from './services/db.service';
 import { Importer } from './importer';
 import { TelegramService } from './services/telegram.service';
 import { S3Service } from './services/s3.service';
@@ -14,6 +16,7 @@ export function createServer(
   s3Service: S3Service,
   dashboardPassword: string
 ) {
+  const channelStatuses: ChannelStatus[] = ['pending', 'running', 'completed', 'failed'];
   const expectedToken = crypto.createHash('sha256').update(dashboardPassword).digest('hex');
 
   const isAuthed = (req: Request): boolean => {
@@ -76,6 +79,18 @@ export function createServer(
     next();
   };
 
+  const handleValidationErrors = (req: Request, res: Response, next: NextFunction) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      res.status(400).json({
+        success: false,
+        error: errors.array()[0].msg
+      });
+      return;
+    }
+    next();
+  };
+
   /**
    * GET /api/progress
    * Returns progress of all channels and global database statistics.
@@ -94,6 +109,65 @@ export function createServer(
       next(err);
     }
   });
+
+  /**
+   * GET /api/channels
+   * Returns tracked channels with optional status filtering and pagination.
+   */
+  app.get(
+    '/api/channels',
+    apiAuthMiddleware,
+    [
+      query('status')
+        .optional({ values: 'falsy' })
+        .isIn(channelStatuses)
+        .withMessage(`Invalid status. Expected one of: ${channelStatuses.join(', ')}.`),
+      query('page')
+        .optional({ values: 'falsy' })
+        .isInt({ min: 1 })
+        .withMessage('Pagination query parameters page and limit must be positive integers.')
+        .toInt(),
+      query('limit')
+        .optional({ values: 'falsy' })
+        .isInt({ min: 1 })
+        .withMessage('Pagination query parameters page and limit must be positive integers.')
+        .toInt(),
+      handleValidationErrors
+    ],
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const queryParams = matchedData<{
+          status?: ChannelStatus;
+          page?: number;
+          limit?: number;
+        }>(req, { locations: ['query'] });
+        const status = queryParams.status;
+        const page = queryParams.page ?? 1;
+        const rawLimit = queryParams.limit ?? 50;
+        const limit = Math.min(rawLimit, 100);
+        const offset = (page - 1) * limit;
+        const result = await dbService.listChannels({
+          status,
+          limit,
+          offset
+        });
+        const totalPages = Math.ceil(result.total / limit);
+
+        res.json({
+          success: true,
+          channels: result.channels,
+          pagination: {
+            page,
+            limit,
+            total: result.total,
+            total_pages: totalPages
+          }
+        });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
 
   /**
    * POST /api/channels
