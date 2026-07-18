@@ -171,7 +171,8 @@ export function createServer(
 
   /**
    * POST /api/channels
-   * Resolves a public Telegram channel by username, registers it, and schedules it for import.
+   * Resolves public Telegram channel(s) by username(s), registers them, and schedules them for import.
+   * Supports comma, newline, or space-separated lists of usernames.
    */
   app.post('/api/channels', apiAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -181,73 +182,160 @@ export function createServer(
         return;
       }
 
-      const cleanUsername = username.trim()
-        .replace(/^(https?:\/\/)?(www\.)?t\.me\//, '')
-        .replace(/^@/, '')
-        .trim();
-
-      const usernameRegex = /^[a-zA-Z0-9_]{5,32}$/;
-      if (!usernameRegex.test(cleanUsername)) {
-        res.status(400).json({
-          success: false,
-          error: 'Invalid Telegram username. It must be between 5 and 32 characters and contain only letters, numbers, and underscores.'
-        });
+      // Parse comma, space, or newline-separated usernames
+      const rawUsernames = username.split(/[\s,]+/).map(u => u.trim()).filter(Boolean);
+      if (rawUsernames.length === 0) {
+        res.status(400).json({ success: false, error: 'Channel username is required.' });
         return;
       }
 
-      logger.info(`REST API: Request to add channel "${cleanUsername}"`);
+      const isMulti = rawUsernames.length > 1;
+      const results: Array<{
+        username: string;
+        success: boolean;
+        channel?: {
+          channel_id: string;
+          channel_username: string;
+          title: string;
+          status: string;
+        };
+        error?: string;
+        statusCode?: number;
+      }> = [];
 
-      // Check if the channel username is already being tracked
-      const existingChannel = await dbService.getChannelByUsername(cleanUsername);
-      if (existingChannel) {
-        res.status(409).json({
-          success: false,
-          error: `Channel @${existingChannel.channel_username || cleanUsername} is already being tracked.`
+      for (let i = 0; i < rawUsernames.length; i++) {
+        const u = rawUsernames[i];
+
+        // Introduce a small 1s delay between sequential resolutions to avoid Telegram rate limits
+        if (i > 0 && process.env.NODE_ENV !== 'test') {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+
+        const cleanUsername = u
+          .replace(/^(https?:\/\/)?(www\.)?t\.me\//, '')
+          .replace(/^@/, '')
+          .trim();
+
+        const usernameRegex = /^[a-zA-Z0-9_]{5,32}$/;
+        if (!usernameRegex.test(cleanUsername)) {
+          results.push({
+            username: u,
+            success: false,
+            error: `Invalid Telegram username "${u}". It must be between 5 and 32 characters and contain only letters, numbers, and underscores.`,
+            statusCode: 400
+          });
+          continue;
+        }
+
+        logger.info(`REST API: Request to add channel "${cleanUsername}"`);
+
+        // Check if the channel username is already being tracked
+        try {
+          const existingChannel = await dbService.getChannelByUsername(cleanUsername);
+          if (existingChannel) {
+            results.push({
+              username: cleanUsername,
+              success: false,
+              error: `Channel @${existingChannel.channel_username || cleanUsername} is already being tracked.`,
+              statusCode: 409
+            });
+            continue;
+          }
+        } catch (dbErr: any) {
+          results.push({
+            username: cleanUsername,
+            success: false,
+            error: `Database error checking username: ${dbErr.message}`,
+            statusCode: 500
+          });
+          continue;
+        }
+
+        // Try resolving entity on Telegram to ensure correctness
+        let channelEntity;
+        try {
+          channelEntity = await telegramService.getChannelEntity(cleanUsername);
+        } catch (err: any) {
+          logger.error(`REST API: Failed to resolve channel "${cleanUsername}": ${err.message}`);
+          results.push({
+            username: cleanUsername,
+            success: false,
+            error: `Could not resolve Telegram channel "${cleanUsername}". Check if username exists and is public.`,
+            statusCode: 400
+          });
+          continue;
+        }
+
+        const channelId = channelEntity.id.toString();
+        const title = channelEntity.title || '';
+        const finalUsername = channelEntity.username || cleanUsername;
+
+        try {
+          // Check if the resolved channel ID is already being tracked
+          const existingById = await dbService.getChannelProgress(channelId);
+          if (existingById) {
+            await dbService.upsertChannel(channelId, finalUsername, title, existingById.status);
+            results.push({
+              username: finalUsername,
+              success: false,
+              error: `Channel "${title}" (@${finalUsername}) is already being tracked.`,
+              statusCode: 409
+            });
+            continue;
+          }
+
+          // Register the channel in postgres as pending
+          await dbService.upsertChannel(channelId, finalUsername, title, 'pending');
+        } catch (dbErr: any) {
+          results.push({
+            username: finalUsername,
+            success: false,
+            error: `Database error registering channel: ${dbErr.message}`,
+            statusCode: 500
+          });
+          continue;
+        }
+
+        logger.info(`REST API: Channel @${finalUsername} (${title}) registered successfully.`);
+
+        results.push({
+          username: finalUsername,
+          success: true,
+          channel: {
+            channel_id: channelId,
+            channel_username: finalUsername,
+            title,
+            status: 'pending'
+          }
         });
+      }
+
+      // Backward compatible single channel response format
+      if (!isMulti) {
+        const singleResult = results[0];
+        if (singleResult.success) {
+          res.json({
+            success: true,
+            channel: singleResult.channel
+          });
+        } else {
+          res.status(singleResult.statusCode || 400).json({
+            success: false,
+            error: singleResult.error
+          });
+        }
         return;
       }
 
-      // Try resolving entity on Telegram to ensure correctness
-      let channelEntity;
-      try {
-        channelEntity = await telegramService.getChannelEntity(cleanUsername);
-      } catch (err: any) {
-        logger.error(`REST API: Failed to resolve channel "${cleanUsername}": ${err.message}`);
-        res.status(400).json({
-          success: false,
-          error: `Could not resolve Telegram channel "${cleanUsername}". Check if username exists and is public.`
-        });
-        return;
-      }
-
-      const channelId = channelEntity.id.toString();
-      const title = channelEntity.title || '';
-      const finalUsername = channelEntity.username || cleanUsername;
-
-      // Check if the resolved channel ID is already being tracked
-      const existingById = await dbService.getChannelProgress(channelId);
-      if (existingById) {
-        await dbService.upsertChannel(channelId, finalUsername, title, existingById.status);
-        res.status(409).json({
-          success: false,
-          error: `Channel "${title}" (@${finalUsername}) is already being tracked.`
-        });
-        return;
-      }
-
-      // Register the channel in postgres as pending
-      await dbService.upsertChannel(channelId, finalUsername, title, 'pending');
-
-      logger.info(`REST API: Channel @${finalUsername} (${title}) registered successfully.`);
-
+      // Multi-channel response format
       res.json({
         success: true,
-        channel: {
-          channel_id: channelId,
-          channel_username: finalUsername,
-          title,
-          status: 'pending'
-        }
+        results: results.map(r => ({
+          username: r.username,
+          success: r.success,
+          channel: r.channel,
+          error: r.error
+        }))
       });
     } catch (err) {
       next(err);
