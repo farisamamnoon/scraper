@@ -20,6 +20,7 @@ describe('Express API Server Endpoints', () => {
   beforeEach(() => {
     mockDbService = {
       getAllChannels: jest.fn(),
+      listChannels: jest.fn(),
       getGlobalStats: jest.fn(),
       upsertChannel: jest.fn(),
       getChannelByUsername: jest.fn().mockResolvedValue(null),
@@ -144,6 +145,94 @@ describe('Express API Server Endpoints', () => {
       expect(response.body.stats).toEqual(mockStats);
       expect(response.body.channels).toHaveLength(1);
       expect(response.body.channels[0].channel_username).toBe('durov');
+    });
+  });
+
+  describe('GET /api/channels', () => {
+    it('should return paginated channels with optional status filter when authenticated', async () => {
+      const mockChannels = [
+        {
+          channel_id: '123456789',
+          channel_username: 'durov',
+          title: 'Durov Channel',
+          import_started_at: new Date(),
+          import_completed_at: null,
+          last_processed_message_id: '4560',
+          status: 'running',
+          message_count: 50,
+        },
+      ];
+
+      mockDbService.listChannels.mockResolvedValue({
+        channels: mockChannels as any,
+        total: 75
+      });
+
+      const response = await request(app)
+        .get('/api/channels?status=running&page=2&limit=25')
+        .set('Cookie', authCookie)
+        .expect('Content-Type', /json/)
+        .expect(200);
+
+      expect(mockDbService.listChannels).toHaveBeenCalledWith({
+        status: 'running',
+        limit: 25,
+        offset: 25
+      });
+      expect(response.body.success).toBe(true);
+      expect(response.body.channels).toHaveLength(1);
+      expect(response.body.pagination).toEqual({
+        page: 2,
+        limit: 25,
+        total: 75,
+        total_pages: 3
+      });
+    });
+
+    it('should default pagination and cap limit when no query parameters are provided', async () => {
+      mockDbService.listChannels.mockResolvedValue({
+        channels: [],
+        total: 0
+      });
+
+      const response = await request(app)
+        .get('/api/channels?limit=500')
+        .set('Cookie', authCookie)
+        .expect(200);
+
+      expect(mockDbService.listChannels).toHaveBeenCalledWith({
+        status: undefined,
+        limit: 100,
+        offset: 0
+      });
+      expect(response.body.pagination).toEqual({
+        page: 1,
+        limit: 100,
+        total: 0,
+        total_pages: 0
+      });
+    });
+
+    it('should return 400 for invalid status filters', async () => {
+      const response = await request(app)
+        .get('/api/channels?status=unknown')
+        .set('Cookie', authCookie)
+        .expect(400);
+
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toContain('Invalid status');
+      expect(mockDbService.listChannels).not.toHaveBeenCalled();
+    });
+
+    it('should return 400 for invalid pagination parameters', async () => {
+      const response = await request(app)
+        .get('/api/channels?page=0&limit=abc')
+        .set('Cookie', authCookie)
+        .expect(400);
+
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toContain('positive integers');
+      expect(mockDbService.listChannels).not.toHaveBeenCalled();
     });
   });
 
