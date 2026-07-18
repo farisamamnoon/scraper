@@ -1,9 +1,15 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { DbService, ChannelProgress } from './services/db.service';
 import { S3Service } from './services/s3.service';
 import { TelegramService, TelegramMediaInfo } from './services/telegram.service';
 import { logger } from './logger';
+
+export interface ImporterOptions {
+  limitPerBatch?: number;
+  bufferHours?: number;
+}
 
 export class Importer {
   private dbService: DbService;
@@ -14,17 +20,22 @@ export class Importer {
   private activeJobs = 0;
   private isShuttingDown = false;
   private checkTimeout: NodeJS.Timeout | null = null;
+  private readonly limitPerBatch: number;
+  private readonly bufferHours: number;
 
   constructor(
     dbService: DbService,
     s3Service: S3Service,
     telegramService: TelegramService,
-    concurrency: number
+    concurrency: number,
+    options: ImporterOptions = {}
   ) {
     this.dbService = dbService;
     this.s3Service = s3Service;
     this.telegramService = telegramService;
     this.concurrency = concurrency;
+    this.limitPerBatch = options.limitPerBatch ?? 100;
+    this.bufferHours = options.bufferHours ?? 24;
   }
 
   /**
@@ -98,7 +109,7 @@ export class Importer {
   }
 
   /**
-   * Processes a single channel from oldest to newest message.
+   * Processes a single channel from newest to oldest, grouped into time-window chunks.
    */
   async importChannel(channel: ChannelProgress): Promise<void> {
     const channelIdStr = channel.channel_id;
@@ -133,26 +144,22 @@ export class Importer {
       logger.info(`[Channel ${resolvedTitle}] Resuming import from message ID ${lastProcessedId}`);
 
       const tempDir = path.join(process.cwd(), 'temp');
-      if (!fs.existsSync(tempDir)) {
-        await fs.promises.mkdir(tempDir, { recursive: true });
-      }
-
-      let currentMinId = lastProcessedId;
+      let currentOffsetId = lastProcessedId;
       let batchCount = 0;
+      const bufferMs = this.bufferHours * 60 * 60 * 1000;
 
       while (!this.isShuttingDown) {
-        logger.debug(`[Channel ${resolvedTitle}] Fetching message batch with minId ${currentMinId}`);
+        logger.debug(`[Channel ${resolvedTitle}] Fetching message batch with offsetId ${currentOffsetId}`);
 
         const messages = await this.telegramService.executeWithRetry(
           async (client) => {
             return await client.getMessages(channelEntity, {
-              minId: currentMinId,
-              limit: 100,
-              reverse: true,
+              offsetId: currentOffsetId,
+              limit: this.limitPerBatch,
             });
           },
           `fetch messages batch for channel ${resolvedTitle}`
-        );
+        ) as any[];
 
         if (!messages || messages.length === 0) {
           logger.info(`[Channel ${resolvedTitle}] Import complete. No new messages found.`);
@@ -160,16 +167,47 @@ export class Importer {
           return;
         }
 
-        let maxBatchId = currentMinId;
+        const gapIndices: number[] = [];
+        for (let i = 0; i < messages.length - 1; i++) {
+          const currentDate = messages[i].date;
+          const nextDate = messages[i + 1].date;
+          if (!currentDate || !nextDate) continue;
 
-        for (const msg of messages) {
+          const diff = Math.abs(currentDate * 1000 - nextDate * 1000);
+          if (diff > bufferMs) {
+            gapIndices.push(i);
+          }
+        }
+
+        let cutIndex = messages.length - 1;
+        const foundGap = gapIndices.length > 0;
+        if (foundGap) {
+          cutIndex = gapIndices[gapIndices.length - 1];
+        }
+
+        const controlledChunk = messages.slice(0, cutIndex + 1);
+        const oldestMessage = controlledChunk[controlledChunk.length - 1];
+        const newestMessage = controlledChunk[0];
+        const chunkId = crypto.randomUUID();
+        const chunkStartTime = oldestMessage.date ? new Date(oldestMessage.date * 1000) : new Date();
+        const chunkEndTime = newestMessage.date ? new Date(newestMessage.date * 1000) : chunkStartTime;
+
+        await this.dbService.createProcessingChunk(
+          chunkId,
+          resolvedId,
+          chunkStartTime,
+          chunkEndTime,
+          controlledChunk.length,
+          'running'
+        );
+
+        let processedInChunk = 0;
+
+        for (const msg of controlledChunk) {
           if (this.isShuttingDown) break;
 
           try {
             const messageId = msg.id;
-            if (messageId > maxBatchId) {
-              maxBatchId = messageId;
-            }
 
             // Check if message is already recorded and has a media key
             const existingMediaKey = await this.dbService.getExistingMessageMediaKey(
@@ -220,8 +258,10 @@ export class Importer {
               messageId,
               messageDate,
               telegramJson,
-              mediaKey
+              mediaKey,
+              chunkId
             );
+            processedInChunk++;
 
           } catch (msgErr) {
             logger.error(`[Channel ${resolvedTitle}] Error processing message ID ${msg.id}:`, msgErr);
@@ -229,13 +269,25 @@ export class Importer {
           }
         }
 
-        currentMinId = maxBatchId;
-        await this.dbService.updateChannelProgress(resolvedId, currentMinId);
+        await this.dbService.updateProcessingChunkStatus(
+          chunkId,
+          processedInChunk === controlledChunk.length ? 'completed' : 'failed',
+          processedInChunk
+        );
+
+        currentOffsetId = oldestMessage.id;
+        await this.dbService.updateChannelProgress(resolvedId, currentOffsetId);
         batchCount++;
 
         logger.info(
-          `[Channel ${resolvedTitle}] Processed batch ${batchCount}. Up to message ID: ${currentMinId}`
+          `[Channel ${resolvedTitle}] Processed chunk ${batchCount}. Offset message ID: ${currentOffsetId}`
         );
+
+        if (!foundGap && messages.length === this.limitPerBatch) {
+          logger.warn(
+            `[Channel ${resolvedTitle}] No gap found in batch of ${this.limitPerBatch}. Forcing split to maintain progress.`
+          );
+        }
       }
     } catch (error: any) {
       logger.error(`[Channel ${channelIdStr}] Import failed:`, error);
@@ -253,6 +305,10 @@ export class Importer {
     mediaInfo: TelegramMediaInfo,
     tempDir: string
   ): Promise<string | null> {
+    if (!fs.existsSync(tempDir)) {
+      await fs.promises.mkdir(tempDir, { recursive: true });
+    }
+
     const tempFilePath = path.join(
       tempDir,
       `temp_${channelId}_${messageId}_${mediaInfo.fileName}`

@@ -40,6 +40,8 @@ describe('Configuration parsing and validation', () => {
     expect(parsed.postgres.db).toBe('telegram_db');
     expect(parsed.s3.bucket).toBe('telegram-media');
     expect(parsed.importer.concurrency).toBe(2);
+    expect(parsed.importer.limitPerBatch).toBe(100);
+    expect(parsed.importer.bufferHours).toBe(24);
     expect(parsed.server.port).toBe(8080);
     expect(parsed.dashboardPassword).toBe('test_password');
   });
@@ -88,12 +90,16 @@ describe('Configuration parsing and validation', () => {
     // Explicitly delete optional variables
     delete process.env.POSTGRES_PORT;
     delete process.env.IMPORT_CONCURRENCY;
+    delete process.env.IMPORT_LIMIT_PER_BATCH;
+    delete process.env.IMPORT_BUFFER_HOURS;
     delete process.env.PORT;
     delete process.env.CHANNELS;
 
     const parsed = parseAndValidateConfig();
     expect(parsed.postgres.port).toBe(5432);
     expect(parsed.importer.concurrency).toBe(1);
+    expect(parsed.importer.limitPerBatch).toBe(100);
+    expect(parsed.importer.bufferHours).toBe(24);
     expect(parsed.server.port).toBe(3000);
     expect(parsed.telegram.proxy).toBeUndefined();
   });

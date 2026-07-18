@@ -17,6 +17,8 @@ describe('Importer message extraction and logic', () => {
       getChannelProgress: jest.fn(),
       getChannelByUsername: jest.fn(),
       getExistingMessageMediaKey: jest.fn(),
+      createProcessingChunk: jest.fn(),
+      updateProcessingChunkStatus: jest.fn(),
       upsertMessage: jest.fn(),
       getAllChannels: jest.fn(),
       getGlobalStats: jest.fn(),
@@ -38,6 +40,80 @@ describe('Importer message extraction and logic', () => {
     } as unknown as jest.Mocked<TelegramService>;
 
     importer = new Importer(mockDbService, mockS3Service, mockTelegramService, 1);
+  });
+
+  describe('importChannel chunking', () => {
+    it('fetches with offsetId and splits controlled chunks at the last time gap', async () => {
+      const chunkedImporter = new Importer(
+        mockDbService,
+        mockS3Service,
+        mockTelegramService,
+        1,
+        { limitPerBatch: 3, bufferHours: 1 }
+      );
+      const channelEntity = {
+        id: 123456789n,
+        title: 'Chunked Channel',
+        username: 'chunked',
+      };
+      const messages = [
+        { id: 30, date: 20000, message: 'newest' },
+        { id: 29, date: 19900, message: 'nearby' },
+        { id: 28, date: 10000, message: 'older gap' },
+      ];
+      const firstBatchGetMessages = jest.fn().mockResolvedValue(messages);
+      const secondBatchGetMessages = jest.fn().mockResolvedValue([{ id: 28, date: 10000, message: 'older gap' }]);
+      const emptyBatchGetMessages = jest.fn().mockResolvedValue([]);
+
+      mockTelegramService.getChannelEntity.mockResolvedValue(channelEntity as any);
+      mockDbService.getChannelProgress.mockResolvedValue({
+        channel_id: '123456789',
+        channel_username: 'chunked',
+        title: 'Chunked Channel',
+        import_started_at: null,
+        import_completed_at: null,
+        last_processed_message_id: null,
+        status: 'running',
+      });
+      mockTelegramService.executeWithRetry
+        .mockImplementationOnce(async (fn) => fn({ getMessages: firstBatchGetMessages } as any))
+        .mockImplementationOnce(async (fn) => fn({ getMessages: secondBatchGetMessages } as any))
+        .mockImplementationOnce(async (fn) => fn({ getMessages: emptyBatchGetMessages } as any));
+      mockTelegramService.hasDownloadableMedia.mockReturnValue(false);
+      mockDbService.getExistingMessageMediaKey.mockResolvedValue(undefined);
+
+      await chunkedImporter.importChannel({
+        channel_id: '123456789',
+        channel_username: 'chunked',
+        title: 'Chunked Channel',
+        import_started_at: null,
+        import_completed_at: null,
+        last_processed_message_id: null,
+        status: 'pending',
+      });
+
+      expect(firstBatchGetMessages).toHaveBeenCalledWith(channelEntity, {
+        offsetId: 0,
+        limit: 3,
+      });
+      expect(secondBatchGetMessages).toHaveBeenCalledWith(channelEntity, {
+        offsetId: 29,
+        limit: 3,
+      });
+      expect(mockDbService.createProcessingChunk).toHaveBeenNthCalledWith(
+        1,
+        expect.any(String),
+        '123456789',
+        new Date(19900 * 1000),
+        new Date(20000 * 1000),
+        2,
+        'running'
+      );
+      expect(mockDbService.upsertMessage).toHaveBeenCalledTimes(3);
+      expect(mockDbService.updateChannelProgress).toHaveBeenNthCalledWith(1, '123456789', 29);
+      expect(mockDbService.updateChannelProgress).toHaveBeenNthCalledWith(2, '123456789', 28);
+      expect(mockDbService.updateChannelStatus).toHaveBeenLastCalledWith('123456789', 'completed');
+    });
   });
 
   describe('extractCleanJson', () => {
