@@ -253,6 +253,117 @@ describe('Express API Server Endpoints', () => {
       expect(response.body.success).toBe(false);
       expect(response.body.error).toContain('Invalid Telegram username');
     });
+
+    it('should successfully register multiple valid public channels when authenticated', async () => {
+      const mockTelegramEntity = {
+        id: 123n,
+        title: 'Telegram News',
+        username: 'telegram',
+      };
+      const mockDurovEntity = {
+        id: 456n,
+        title: 'Durov Channel',
+        username: 'durov',
+      };
+
+      mockTelegramService.getChannelEntity
+        .mockResolvedValueOnce(mockTelegramEntity as any)
+        .mockResolvedValueOnce(mockDurovEntity as any);
+
+      const response = await request(app)
+        .post('/api/channels')
+        .set('Cookie', authCookie)
+        .send({ username: 'telegram, durov' })
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.results).toBeDefined();
+      expect(response.body.results).toHaveLength(2);
+
+      expect(response.body.results[0]).toEqual({
+        username: 'telegram',
+        success: true,
+        channel: {
+          channel_id: '123',
+          channel_username: 'telegram',
+          title: 'Telegram News',
+          status: 'pending',
+        },
+      });
+
+      expect(response.body.results[1]).toEqual({
+        username: 'durov',
+        success: true,
+        channel: {
+          channel_id: '456',
+          channel_username: 'durov',
+          title: 'Durov Channel',
+          status: 'pending',
+        },
+      });
+
+      expect(mockTelegramService.getChannelEntity).toHaveBeenCalledWith('telegram');
+      expect(mockTelegramService.getChannelEntity).toHaveBeenCalledWith('durov');
+      expect(mockDbService.upsertChannel).toHaveBeenCalledWith('123', 'telegram', 'Telegram News', 'pending');
+      expect(mockDbService.upsertChannel).toHaveBeenCalledWith('456', 'durov', 'Durov Channel', 'pending');
+    });
+
+    it('should handle mixed success and failure when registering multiple channels', async () => {
+      const mockTelegramEntity = {
+        id: 123n,
+        title: 'Telegram News',
+        username: 'telegram',
+      };
+
+      // telegram resolves, invalid_chan rejects
+      mockTelegramService.getChannelEntity
+        .mockResolvedValueOnce(mockTelegramEntity as any)
+        .mockRejectedValueOnce(new Error('Channel not found'));
+
+      // already_tracked is mock-resolved in DB
+      mockDbService.getChannelByUsername.mockImplementation(async (username) => {
+        if (username === 'already_tracked') {
+          return {
+            channel_id: '789',
+            channel_username: 'already_tracked',
+            title: 'Tracked',
+            status: 'completed',
+          } as any;
+        }
+        return null;
+      });
+
+      const response = await request(app)
+        .post('/api/channels')
+        .set('Cookie', authCookie)
+        .send({ username: 'telegram, already_tracked, invalid_chan' })
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.results).toHaveLength(3);
+
+      // Index 0: telegram (Success)
+      expect(response.body.results[0]).toEqual({
+        username: 'telegram',
+        success: true,
+        channel: {
+          channel_id: '123',
+          channel_username: 'telegram',
+          title: 'Telegram News',
+          status: 'pending',
+        },
+      });
+
+      // Index 1: already_tracked (Conflict)
+      expect(response.body.results[1].username).toBe('already_tracked');
+      expect(response.body.results[1].success).toBe(false);
+      expect(response.body.results[1].error).toContain('already being tracked');
+
+      // Index 2: invalid_chan (Not found)
+      expect(response.body.results[2].username).toBe('invalid_chan');
+      expect(response.body.results[2].success).toBe(false);
+      expect(response.body.results[2].error).toContain('Could not resolve');
+    });
   });
 
   describe('DELETE /api/channels/:channelId', () => {
