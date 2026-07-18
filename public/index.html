@@ -218,26 +218,70 @@
 
     /* ── Toast ──────────────────────────────────────────────── */
     .toast {
+      position: relative;
       display: none;
       font-size: 13px;
-      padding: 9px 13px;
+      padding: 9px 32px 9px 13px;
       border-radius: 6px;
       border-left: 3px solid;
       margin-bottom: 12px;
     }
 
     .toast.success {
-      display: block;
+      display: flex;
+      align-items: center;
       background: rgba(34, 197, 94, 0.07);
       border-color: var(--s-done);
       color: #86efac;
     }
 
     .toast.error {
-      display: block;
+      display: flex;
+      align-items: center;
       background: rgba(239, 68, 68, 0.07);
       border-color: var(--s-failed);
       color: #fca5a5;
+    }
+
+    .toast-close {
+      position: absolute;
+      top: 50%;
+      right: 8px;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: inherit;
+      opacity: 0.6;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.15s;
+    }
+
+    .toast-close:hover {
+      opacity: 1;
+    }
+
+    .toast-link-btn {
+      background: none;
+      border: none;
+      color: inherit;
+      text-decoration: underline;
+      cursor: pointer;
+      font-weight: 500;
+      padding: 0;
+      margin-left: 6px;
+      font-family: inherit;
+      font-size: inherit;
+      opacity: 0.85;
+      transition: opacity 0.15s;
+    }
+
+    .toast-link-btn:hover {
+      opacity: 1;
     }
 
     /* ── Channel list ───────────────────────────────────────── */
@@ -815,6 +859,19 @@
     </div>
   </div>
 
+  <!-- ── Logs modal ───────────────────────────────────────── -->
+  <div class="explorer-overlay" id="logs-overlay">
+    <div class="exp-box" style="max-width: 500px; height: auto; max-height: 75vh;">
+      <div class="exp-topbar">
+        <span class="exp-title">Registration Status Logs</span>
+        <button class="exp-close" id="logs-close-btn" onclick="closeLogsModal()">✕</button>
+      </div>
+      <div class="exp-body" style="display: block; overflow-y: auto; padding: 20px; grid-template-columns: 1fr;">
+        <div id="logs-content" style="color: var(--text-2); line-height: 1.6;"></div>
+      </div>
+    </div>
+  </div>
+
   <script>
     // Intercept 401 Unauthorized API responses and redirect to login
     (function() {
@@ -870,53 +927,162 @@
     }
 
     // ── Banner ───────────────────────────────────────────────
-    function showBanner(msg, type) { banner.textContent = msg; banner.className = `toast ${type}`; }
-    function hideBanner()          { banner.className = 'toast'; }
+    let bannerTimeout = null;
+    function showBanner(msg, type, isHtml = false, autoDismissMs = 0) {
+      if (bannerTimeout) {
+        clearTimeout(bannerTimeout);
+        bannerTimeout = null;
+      }
 
+      const container = document.createElement('div');
+      container.style.flex = '1';
+      if (isHtml) {
+        container.innerHTML = msg;
+      } else {
+        container.textContent = msg;
+      }
+
+      banner.innerHTML = '';
+      banner.appendChild(container);
+
+      // Inject close button
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'toast-close';
+      closeBtn.type = 'button';
+      closeBtn.innerHTML = '✕';
+      closeBtn.onclick = hideBanner;
+      banner.appendChild(closeBtn);
+
+      banner.className = `toast ${type}`;
+
+      if (autoDismissMs > 0) {
+        bannerTimeout = setTimeout(hideBanner, autoDismissMs);
+      }
+    }
+    function hideBanner() {
+      if (bannerTimeout) {
+        clearTimeout(bannerTimeout);
+        bannerTimeout = null;
+      }
+      banner.className = 'toast';
+    }
+ 
     // ── Add channel ──────────────────────────────────────────
     addForm.addEventListener('submit', async e => {
       e.preventDefault();
       const usernameInput = chInput.value.trim();
       if (!usernameInput) return;
-
-      const cleanUsername = usernameInput
-        .replace(/^(https?:\/\/)?(www\.)?t\.me\//, '')
-        .replace(/^@/, '')
-        .trim();
-
+ 
+      // Parse inputs by split on comma, newline, and spaces
+      const rawUsernames = usernameInput.split(/[\s,]+/).map(u => u.trim()).filter(Boolean);
+      if (rawUsernames.length === 0) return;
+ 
+      const cleanUsernames = rawUsernames.map(u => {
+        return u
+          .replace(/^(https?:\/\/)?(www\.)?t\.me\//, '')
+          .replace(/^@/, '')
+          .trim();
+      });
+ 
       const usernameRegex = /^[a-zA-Z0-9_]{5,32}$/;
-      if (!usernameRegex.test(cleanUsername)) {
-        showBanner('Invalid Telegram username. It must be between 5 and 32 characters and contain only letters, numbers, and underscores.', 'error');
+      const validationErrors = [];
+      const validUsernames = [];
+ 
+      cleanUsernames.forEach((u, idx) => {
+        const raw = rawUsernames[idx];
+        if (!usernameRegex.test(u)) {
+          validationErrors.push(`@${esc(u)}: Invalid Telegram username format.`);
+          return;
+        }
+        const alreadyTracked = trackedChannels.some(ch => 
+          ch.channel_username && ch.channel_username.toLowerCase() === u.toLowerCase()
+        );
+        if (alreadyTracked) {
+          validationErrors.push(`@${esc(u)}: Already being tracked.`);
+          return;
+        }
+        validUsernames.push(u);
+      });
+ 
+      // If none of the inputs are valid/new, show validation errors immediately
+      if (validUsernames.length === 0) {
+        if (validationErrors.length === 1) {
+          showBanner(validationErrors[0], 'error');
+        } else {
+          lastImportResults = { successes: [], failures: [], validationErrors };
+          const errSummary = `Failed to add channels. <button type="button" class="toast-link-btn" onclick="showImportDetails()">View logs</button>`;
+          showBanner(errSummary, 'error', true);
+        }
         return;
       }
-
-      // Check if already in the tracked list
-      const alreadyTracked = trackedChannels.some(ch => 
-        ch.channel_username && ch.channel_username.toLowerCase() === cleanUsername.toLowerCase()
-      );
-      if (alreadyTracked) {
-        showBanner(`Channel @${cleanUsername} is already being tracked.`, 'error');
-        return;
-      }
-
+ 
       addBtn.disabled = true;
       addBtn.textContent = 'Checking…';
       hideBanner();
+ 
       try {
         const res  = await fetch('/api/channels', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: cleanUsername })
+          body: JSON.stringify({ username: validUsernames.join(',') })
         });
         const data = await res.json();
+ 
         if (data.success) {
-          showBanner(`@${data.channel.channel_username} added to the import queue.`, 'success');
+          let bannerHtml = '';
+          let bannerType = 'success';
+          let autoDismissMs = 0;
+ 
+          if (data.results) {
+            // Multi-channel response format
+            const backendSuccesses = data.results.filter(r => r.success);
+            const backendFailures = data.results.filter(r => !r.success);
+ 
+            lastImportResults = {
+              successes: backendSuccesses,
+              failures: backendFailures,
+              validationErrors: [...validationErrors]
+            };
+ 
+            const successCount = backendSuccesses.length;
+            const failureCount = backendFailures.length + validationErrors.length;
+ 
+            if (failureCount === 0) {
+              bannerType = 'success';
+              if (successCount === 1) {
+                bannerHtml = `@${esc(backendSuccesses[0].channel.channel_username)} added to the import queue.`;
+                autoDismissMs = 5000;
+              } else {
+                bannerHtml = `Successfully added ${successCount} channels. <button type="button" class="toast-link-btn" onclick="showImportDetails()">View details</button>`;
+                autoDismissMs = 6000;
+              }
+            } else if (successCount === 0) {
+              bannerType = 'error';
+              if (failureCount === 1) {
+                const singleErr = validationErrors[0] || backendFailures[0].error;
+                bannerHtml = singleErr;
+              } else {
+                bannerHtml = `Failed to add ${failureCount} channels. <button type="button" class="toast-link-btn" onclick="showImportDetails()">View logs</button>`;
+              }
+            } else {
+              bannerType = 'success';
+              bannerHtml = `Added ${successCount} channels, but ${failureCount} failed. <button type="button" class="toast-link-btn" onclick="showImportDetails()">View details</button>`;
+            }
+          } else {
+            // Single-channel legacy format
+            lastImportResults = null;
+            bannerType = 'success';
+            bannerHtml = `@${esc(data.channel.channel_username)} added to the import queue.`;
+            autoDismissMs = 5000;
+          }
+ 
+          showBanner(bannerHtml, bannerType, true, autoDismissMs);
           chInput.value = '';
           await fetchProgress();
         } else {
           showBanner(data.error || 'Failed to add channel.', 'error');
         }
-      } catch {
+      } catch (err) {
         showBanner('Network error — could not reach the server.', 'error');
       } finally {
         addBtn.disabled = false;
@@ -1005,6 +1171,47 @@
 
     fetchProgress();
     setInterval(fetchProgress, 2000);
+
+    // ── Logs Modal ───────────────────────────────────────────
+    let lastImportResults = null;
+
+    function openLogsModal(contentHtml) {
+      document.getElementById('logs-content').innerHTML = contentHtml;
+      document.getElementById('logs-overlay').classList.add('open');
+    }
+
+    function closeLogsModal() {
+      document.getElementById('logs-overlay').classList.remove('open');
+    }
+
+    function showImportDetails() {
+      if (!lastImportResults) return;
+      const { successes, failures, validationErrors } = lastImportResults;
+      
+      let html = '';
+      if (successes.length > 0) {
+        html += `<h4 style="margin-bottom: 8px; color: var(--text); font-size: 13px; font-weight: 600;">Successfully Registered (${successes.length})</h4>`;
+        html += `<ul style="margin-bottom: 20px; padding-left: 18px; list-style-type: disc; color: #86efac; font-size: 12px; display: flex; flex-direction: column; gap: 4px;">`;
+        successes.forEach(s => {
+          html += `<li>@${esc(s.channel.channel_username)} - ${esc(s.channel.title)}</li>`;
+        });
+        html += `</ul>`;
+      }
+      
+      if (validationErrors.length > 0 || failures.length > 0) {
+        html += `<h4 style="margin-bottom: 8px; color: var(--text); font-size: 13px; font-weight: 600;">Failures (${validationErrors.length + failures.length})</h4>`;
+        html += `<ul style="padding-left: 18px; list-style-type: disc; color: #fca5a5; font-size: 12px; display: flex; flex-direction: column; gap: 4px;">`;
+        validationErrors.forEach(e => {
+          html += `<li>${e}</li>`;
+        });
+        failures.forEach(f => {
+          html += `<li>@${esc(f.username)}: ${esc(f.error)}</li>`;
+        });
+        html += `</ul>`;
+      }
+      
+      openLogsModal(html);
+    }
 
     // ── Explorer ─────────────────────────────────────────────
     let currentChannelId = null;
@@ -1167,14 +1374,21 @@
       setTimeout(() => btn.textContent = orig, 1400);
     }
 
-    // Close explorer on Escape
+    // Close modals on Escape
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') closeExplorer();
+      if (e.key === 'Escape') {
+        closeExplorer();
+        closeLogsModal();
+      }
     });
 
     // Close on backdrop click
     document.getElementById('exp-overlay').addEventListener('click', e => {
       if (e.target === e.currentTarget) closeExplorer();
+    });
+
+    document.getElementById('logs-overlay').addEventListener('click', e => {
+      if (e.target === e.currentTarget) closeLogsModal();
     });
   </script>
 
