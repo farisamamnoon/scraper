@@ -33,6 +33,8 @@ export interface Config {
   };
   importer: {
     concurrency: number;
+    limitPerBatch: number;
+    bufferHours: number;
   };
   server: {
     port: number;
@@ -78,6 +80,8 @@ export function parseAndValidateConfig(): Config {
   const s3Bucket = getRequired('S3_BUCKET');
 
   const concurrencyStr = getOptional('IMPORT_CONCURRENCY', '1');
+  const limitPerBatchStr = getOptional('IMPORT_LIMIT_PER_BATCH', '100');
+  const bufferHoursStr = getOptional('IMPORT_BUFFER_HOURS', '24');
   const portStr = getOptional('PORT', '3000');
   const dashboardPassword = getRequired('DASHBOARD_PASSWORD');
 
@@ -98,6 +102,16 @@ export function parseAndValidateConfig(): Config {
   const concurrency = parseInt(concurrencyStr, 10);
   if (isNaN(concurrency) || concurrency < 1) {
     throw new Error(`IMPORT_CONCURRENCY must be a positive integer, got "${concurrencyStr}"`);
+  }
+
+  const limitPerBatch = parseInt(limitPerBatchStr, 10);
+  if (isNaN(limitPerBatch) || limitPerBatch < 1) {
+    throw new Error(`IMPORT_LIMIT_PER_BATCH must be a positive integer, got "${limitPerBatchStr}"`);
+  }
+
+  const bufferHours = parseInt(bufferHoursStr, 10);
+  if (isNaN(bufferHours) || bufferHours < 1) {
+    throw new Error(`IMPORT_BUFFER_HOURS must be a positive integer, got "${bufferHoursStr}"`);
   }
 
   const port = parseInt(portStr, 10);
@@ -146,7 +160,9 @@ export function parseAndValidateConfig(): Config {
       bucket: s3Bucket
     },
     importer: {
-      concurrency
+      concurrency,
+      limitPerBatch,
+      bufferHours
     },
     server: {
       port
@@ -156,4 +172,3 @@ export function parseAndValidateConfig(): Config {
 }
 
 export const config = process.env.NODE_ENV !== 'test' ? parseAndValidateConfig() : {} as Config;
-

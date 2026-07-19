@@ -2,6 +2,7 @@ import { Pool } from 'pg';
 import { logger } from '../logger';
 
 export type ChannelStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type ProcessingStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 export interface ChannelProgress {
   channel_id: string;
@@ -26,6 +27,16 @@ export interface ChannelListOptions {
 export interface ChannelListResult {
   channels: ChannelProgressWithCount[];
   total: number;
+}
+
+export interface ProcessingChunk {
+  id: string;
+  channel_id: string;
+  status: ProcessingStatus;
+  start_time: Date;
+  end_time: Date;
+  message_count: number;
+  created_at: Date;
 }
 
 export class DbService {
@@ -70,8 +81,30 @@ export class DbService {
       `);
 
       await client.query(`
+        CREATE TABLE IF NOT EXISTS processing_chunk (
+            id TEXT PRIMARY KEY,
+            channel_id BIGINT NOT NULL REFERENCES telegram_channels(channel_id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'pending',
+            start_time TIMESTAMP NOT NULL,
+            end_time TIMESTAMP NOT NULL,
+            message_count INTEGER NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+      `);
+
+      await client.query(`
+        ALTER TABLE telegram_messages
+        ADD COLUMN IF NOT EXISTS processing_chunk_id TEXT REFERENCES processing_chunk(id) ON DELETE SET NULL;
+      `);
+
+      await client.query(`
         CREATE INDEX IF NOT EXISTS idx_telegram_messages_channel_id_message_id 
         ON telegram_messages (channel_id, message_id);
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_processing_chunk_channel_id_created_at
+        ON processing_chunk (channel_id, created_at DESC);
       `);
 
       await client.query('COMMIT');
@@ -200,6 +233,56 @@ export class DbService {
   }
 
   /**
+   * Creates a processing chunk that groups a contiguous Telegram batch by time window.
+   */
+  async createProcessingChunk(
+    chunkId: string,
+    channelId: string | number | bigint,
+    startTime: Date,
+    endTime: Date,
+    messageCount: number,
+    status: ProcessingStatus = 'running'
+  ): Promise<ProcessingChunk> {
+    const query = `
+      INSERT INTO processing_chunk (id, channel_id, start_time, end_time, message_count, status)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, channel_id::TEXT, status, start_time, end_time, message_count, created_at;
+    `;
+    const res = await this.pool.query(query, [
+      chunkId,
+      channelId.toString(),
+      startTime,
+      endTime,
+      messageCount,
+      status
+    ]);
+    return res.rows[0];
+  }
+
+  /**
+   * Updates processing status for a previously created chunk.
+   */
+  async updateProcessingChunkStatus(
+    chunkId: string,
+    status: ProcessingStatus,
+    messageCount?: number
+  ): Promise<void> {
+    const params: Array<string | number> = [status, chunkId];
+    let countSql = '';
+    if (messageCount !== undefined) {
+      params.push(messageCount);
+      countSql = `, message_count = $${params.length}`;
+    }
+
+    const query = `
+      UPDATE processing_chunk
+      SET status = $1${countSql}
+      WHERE id = $2;
+    `;
+    await this.pool.query(query, params);
+  }
+
+  /**
    * Inserts or updates a telegram message details.
    */
   async upsertMessage(
@@ -207,23 +290,26 @@ export class DbService {
     messageId: string | number | bigint,
     messageDate: Date,
     telegramJson: any,
-    mediaKey: string | null
+    mediaKey: string | null,
+    processingChunkId: string | null = null
   ): Promise<void> {
     const query = `
-      INSERT INTO telegram_messages (channel_id, message_id, message_date, telegram_json, media_key)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO telegram_messages (channel_id, message_id, message_date, telegram_json, media_key, processing_chunk_id)
+      VALUES ($1, $2, $3, $4, $5, $6)
       ON CONFLICT (channel_id, message_id)
       DO UPDATE SET
         message_date = EXCLUDED.message_date,
         telegram_json = EXCLUDED.telegram_json,
-        media_key = COALESCE(telegram_messages.media_key, EXCLUDED.media_key);
+        media_key = COALESCE(telegram_messages.media_key, EXCLUDED.media_key),
+        processing_chunk_id = COALESCE(telegram_messages.processing_chunk_id, EXCLUDED.processing_chunk_id);
     `;
     await this.pool.query(query, [
       channelId.toString(),
       messageId.toString(),
       messageDate,
       JSON.stringify(telegramJson),
-      mediaKey
+      mediaKey,
+      processingChunkId
     ]);
   }
 
@@ -335,6 +421,7 @@ export class DbService {
     try {
       await client.query('BEGIN');
       await client.query('DELETE FROM telegram_messages WHERE channel_id = $1', [channelId.toString()]);
+      await client.query('DELETE FROM processing_chunk WHERE channel_id = $1', [channelId.toString()]);
       await client.query('DELETE FROM telegram_channels WHERE channel_id = $1', [channelId.toString()]);
       await client.query('COMMIT');
       logger.info(`Deleted channel ${channelId} and its messages from database.`);
