@@ -109,7 +109,7 @@ export class Importer {
   }
 
   /**
-   * Processes a single channel from newest to oldest, grouped into time-window chunks.
+   * Processes a single channel from oldest to newest, grouped into time-window chunks.
    */
   async importChannel(channel: ChannelProgress): Promise<void> {
     const channelIdStr = channel.channel_id;
@@ -144,18 +144,19 @@ export class Importer {
       logger.info(`[Channel ${resolvedTitle}] Resuming import from message ID ${lastProcessedId}`);
 
       const tempDir = path.join(process.cwd(), 'temp');
-      let currentOffsetId = lastProcessedId;
+      let currentMinId = lastProcessedId;
       let batchCount = 0;
       const bufferMs = this.bufferHours * 60 * 60 * 1000;
 
       while (!this.isShuttingDown) {
-        logger.debug(`[Channel ${resolvedTitle}] Fetching message batch with offsetId ${currentOffsetId}`);
+        logger.debug(`[Channel ${resolvedTitle}] Fetching message batch with minId ${currentMinId}`);
 
         const messages = await this.telegramService.executeWithRetry(
           async (client) => {
             return await client.getMessages(channelEntity, {
-              offsetId: currentOffsetId,
+              minId: currentMinId,
               limit: this.limitPerBatch,
+              reverse: true,
             });
           },
           `fetch messages batch for channel ${resolvedTitle}`
@@ -186,8 +187,8 @@ export class Importer {
         }
 
         const controlledChunk = messages.slice(0, cutIndex + 1);
-        const oldestMessage = controlledChunk[controlledChunk.length - 1];
-        const newestMessage = controlledChunk[0];
+        const oldestMessage = controlledChunk[0];
+        const newestMessage = controlledChunk[controlledChunk.length - 1];
         const chunkId = crypto.randomUUID();
         const chunkStartTime = oldestMessage.date ? new Date(oldestMessage.date * 1000) : new Date();
         const chunkEndTime = newestMessage.date ? new Date(newestMessage.date * 1000) : chunkStartTime;
@@ -275,12 +276,12 @@ export class Importer {
           processedInChunk
         );
 
-        currentOffsetId = oldestMessage.id;
-        await this.dbService.updateChannelProgress(resolvedId, currentOffsetId);
+        currentMinId = newestMessage.id;
+        await this.dbService.updateChannelProgress(resolvedId, currentMinId);
         batchCount++;
 
         logger.info(
-          `[Channel ${resolvedTitle}] Processed chunk ${batchCount}. Offset message ID: ${currentOffsetId}`
+          `[Channel ${resolvedTitle}] Processed chunk ${batchCount}. Up to message ID: ${currentMinId}`
         );
 
         if (!foundGap && messages.length === this.limitPerBatch) {
