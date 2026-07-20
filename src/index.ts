@@ -54,11 +54,7 @@ async function bootstrap() {
     dbService,
     s3Service,
     telegramService,
-    config.importer.concurrency,
-    {
-      limitPerBatch: config.importer.limitPerBatch,
-      bufferHours: config.importer.bufferHours
-    }
+    config.importer.concurrency
   );
 
   let serverInstance: any;
