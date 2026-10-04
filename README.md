@@ -1,170 +1,95 @@
-# Telegram Historical Importer & Archiver
+# Telegram Historical Importer
 
-A production-ready Node.js TypeScript application designed to perform historical imports of Telegram public channels' message archives. Messages are cleaned, normalized, and stored in **PostgreSQL** (JSONB), and all media attachments are streamed directly to **S3-compatible object storage** (such as MinIO, AWS S3, Cloudflare R2, or Backblaze B2). 
+Copies the full message history of public Telegram channels into **PostgreSQL** (one cleaned JSONB row per message) and streams every photo and document to **S3-compatible storage**. A small password-protected dashboard lets you queue channels, watch progress, and browse what was imported.
 
-The application features a gorgeous glassmorphic web dashboard to monitor import progress, display global ingestion statistics, and dynamically register new channels.
+This is the export stage of a pipeline for migrating audio lectures out of Telegram. The mapping UI lives in [`salsabeel-workflow-frontend`](https://github.com/al-fikra-labs/salsabeel-workflow-frontend) (checked out next to this repo as `../telegram-pipeline-ui`). For where the project stands, read **[docs/status.md](docs/status.md)** first.
 
----
+**Stack:** Node 20 · TypeScript · [GramJS](https://gram.js.org) (MTProto) · `pg` · AWS SDK v3 · Express · Winston · Jest
 
-## Technical Stack
-- **Core**: Node.js & TypeScript
-- **Telegram Client**: GramJS (MTProto client)
-- **Database**: PostgreSQL (using native `pg` client pool)
-- **Storage**: AWS SDK S3 v3 with multipart streaming upload (`@aws-sdk/lib-storage`)
-- **Dashboard Interface**: Glassmorphic HTML, CSS, and Vanilla JavaScript
-- **Testing**: Jest with `ts-jest` and `supertest`
+## How it works
 
----
+1. You register channel handles in the dashboard (or with `POST /api/channels`). Each one is resolved on Telegram and stored as `pending`.
+2. A background loop picks up pending channels (`IMPORT_CONCURRENCY` at a time) and pages through history oldest to newest, 100 messages per batch.
+3. For each message, attachments are downloaded to `temp/`, streamed to `telegram/<channel_id>/<message_id>/<filename>`, and deleted locally. The message is then upserted into `telegram_messages`.
+4. A checkpoint is saved after every batch, so a restart resumes where it left off. Telegram rate limits (FloodWait) are waited out automatically.
 
-## Directory Structure
-```text
-.
-├── package.json
-├── tsconfig.json
-├── jest.config.js
-├── Dockerfile
-├── docker-compose.yml
-├── schema.sql
-├── README.md
-├── .env.example
-├── public/
-│   └── index.html            # Web dashboard page
-├── src/
-│   ├── index.ts              # System bootstrapper and lifecycle manager
-│   ├── config.ts             # Configuration parser and strict validator
-│   ├── importer.ts           # Sequential/concurrent import worker coordinator
-│   ├── server.ts             # Express REST API server
-│   ├── logger.ts             # Winston structured logger setup
-│   └── services/
-│       ├── db.service.ts     # Postgres transaction client
-│       ├── s3.service.ts     # S3 bucket manager and upload stream helper
-│       └── telegram.service.ts # GramJS wrapper, media parser, and FloodWait controller
-└── tests/
-    ├── config.test.ts        # Config validation unit tests
-    ├── importer.test.ts      # Data extraction & normalization unit tests
-    └── server.test.ts        # Express routing and API unit tests
-```
+Details: [docs/architecture.md](docs/architecture.md).
 
----
+## Quick start
 
-## 1. Setup Instructions
+You need Node 20+, Telegram API credentials from [my.telegram.org](https://my.telegram.org) → *API development tools*, a PostgreSQL database that accepts TLS, and an existing S3-compatible bucket.
 
-### Get Telegram API Credentials
-1. Go to [my.telegram.org](https://my.telegram.org) and log in.
-2. Navigate to **API development tools**.
-3. Create a new application (if you don't have one) to retrieve your `api_id` (integer) and `api_hash` (string).
-
-### Configuration Setup
-Copy the configuration template:
 ```bash
-cp .env.example .env
-```
-Open `.env` and fill in:
-- `TELEGRAM_API_ID`
-- `TELEGRAM_API_HASH`
-- `CHANNELS` (comma-separated list of usernames to ingest on startup, e.g. `durov,telegram`)
-
----
-
-## 2. Execution Instructions
-
-### Option A: Local Run (Recommended for First Run / Auth)
-Since Telegram requires interactive login (SMS/Telegram code) on its first run, it is easiest to run the initial connection locally to generate the session file.
-
-1. **Install Dependencies**:
-   ```bash
-   npm install
-   ```
-2. **Launch Postgres & MinIO (Dockerized)**:
-   ```bash
-   docker-compose up -d postgres minio
-   ```
-3. **Execute Importer in Terminal**:
-   ```bash
-   npm run start
-   ```
-4. **Interactive Login**:
-   Follow the terminal prompt to enter your phone number, password (if 2FA is active), and verification code.
-   Once logged in, a local `.session` file is saved to your root directory. The scraper and dashboard will boot immediately.
-5. **Access Dashboard**:
-   Open [http://localhost:3000](http://localhost:3000) in your browser.
-
----
-
-### Option B: Docker Compose Setup (Production Ready)
-Once you have generated a session string or have the `.session` file, you can run the entire system headless.
-
-1. Create a `session` directory:
-   ```bash
-   mkdir -p session
-   ```
-2. If you already ran the script locally, copy the `.session` file into it:
-   ```bash
-   cp .session session/
-   ```
-3. Build and launch the container stack:
-   ```bash
-   docker-compose up -d --build
-   ```
-4. Monitor logs:
-   ```bash
-   docker-compose logs -f app
-   ```
-
----
-
-## 3. Recovery & Resume Behavior
-
-### Robustness & Restart-Safety
-The application is engineered to handle failures, crashes, and network terminations safely:
-1. **Crash Recovery**: If the scraper crashes, restarting the application will query PostgreSQL for any channels with a status of `running` and reset them to `pending`. They are immediately queued to be picked up by the worker thread.
-2. **Resumable Ingestion**: When processing a channel, the worker loads its `last_processed_message_id`. The Telegram query fetches new messages starting *from* this ID (chronologically oldest-to-newest, where `id > last_processed_message_id`).
-3. **Idempotence / UPSERT**: Database writes use `INSERT ... ON CONFLICT (channel_id, message_id) DO UPDATE`. Rerunning an import will never create duplicate message rows.
-4. **Media Check**: Before downloading files from Telegram and uploading to S3, the scraper performs a lookup. If the message exists in PostgreSQL and already has a `media_key` assigned, the download/upload is skipped. This prevents unnecessary network usage and duplicates in S3 storage.
-5. **File Cleanup**: Downloads from Telegram are written directly to disk in chunks to keep memory usage constant. Once uploaded to S3, the temporary file is unlinked immediately in a `finally` block, ensuring no disk bloat.
-
-### Telegram FloodWait Handling
-Telegram imposes rate limits on aggressive pagination and media downloading.
-- If a `FloodWaitError` occurs, the application extracts the wait duration from the API error message.
-- The thread logs the occurrence showing the required sleep period.
-- The worker sleeps for the exact duration and automatically resumes imports once the rate limit clears.
-- The channel is **not** marked as failed during a FloodWait pause.
-
----
-
-## 4. Ingestion Data Structure
-The application processes messages and extracts a clean, non-circular, database-friendly payload for PostgreSQL's `JSONB` column, keeping searches and AI processing extremely fast.
-
-### Database Row Example
-- `channel_id`: `123456789`
-- `message_id`: `4567`
-- `message_date`: `2026-06-17 08:00:00`
-- `media_key`: `telegram/123456789/4567/audio.ogg`
-- `telegram_json`:
-```json
-{
-  "message_id": 4567,
-  "channel_id": "123456789",
-  "date": "2026-06-17T08:00:00.000Z",
-  "text": "Hello world, check out this audio track!",
-  "views": 2500,
-  "forwards": 32,
-  "edit_date": null,
-  "reply_to": null,
-  "media": {
-    "media_type": "audio",
-    "file_name": "audio.ogg",
-    "mime_type": "audio/ogg",
-    "file_size": 1024567
-  }
-}
+npm ci
+cp .env.example .env        # fill in the values, see Configuration
+npm run start               # first run: prompts for phone, login code and 2FA, then writes ./.session
 ```
 
----
+Open http://localhost:3000, log in with `DASHBOARD_PASSWORD`, and add a channel handle.
 
-## 5. Development & Running Tests
-To run unit tests in isolation (no Postgres/MinIO needed):
+> **The bundled `postgres` and `minio` containers don't work with the code on `main` yet.** The app requires TLS for Postgres and uses virtual-hosted S3 URLs that MinIO in Docker can't serve. Use managed services (or patch those two settings locally) until this is fixed. See [known issues](docs/status.md#known-issues).
+
+Login needs an interactive terminal. Database setup runs before the Telegram login, so the database must be reachable even on the first run.
+
+## Configuration
+
+All configuration comes from environment variables (`.env` is loaded automatically).
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `TELEGRAM_API_ID` | ✓ | | Integer from my.telegram.org |
+| `TELEGRAM_API_HASH` | ✓ | | |
+| `TELEGRAM_SESSION` | | | Session string. Takes precedence over the session file and is required for headless/Docker runs |
+| `TELEGRAM_SESSION_FILE_PATH` | | `./.session` | Where the session is read and saved |
+| `TELEGRAM_PROXY_HOST` / `_PORT` | | | SOCKS5 proxy for Telegram; the port is required when the host is set |
+| `TELEGRAM_PROXY_USERNAME` / `_PASSWORD` | | | |
+| `POSTGRES_HOST`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | ✓ | | TLS with certificate verification is required |
+| `POSTGRES_PORT` | | `5432` | |
+| `S3_ENDPOINT` | ✓ | | Include the protocol, e.g. `https://<account>.r2.cloudflarestorage.com` |
+| `S3_REGION`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET` | ✓ | | The bucket must already exist |
+| `DASHBOARD_PASSWORD` | ✓ | | Shared password for the dashboard and API |
+| `IMPORT_CONCURRENCY` | | `1` | Channels imported in parallel. Keep it low to avoid FloodWaits |
+| `PORT` | | `3000` | |
+| `LOG_LEVEL` | | `info` | `debug` shows S3 keys and temp paths |
+| `NODE_ENV` | | | `production` switches to JSON logs; `test` disables config parsing |
+
+## Development
+
 ```bash
-npm run test
+npm test            # Jest; every service is mocked, no network needed
+npx tsc --noEmit    # typecheck
+npm run build       # compile to dist/
 ```
-The test suite utilizes Jest mocks to ensure parser reliability, configuration constraints, and Express route validation.
+
+One config test fails when there's no local `.env` ([known issue #4](docs/status.md#known-issues)).
+
+```
+src/
+  index.ts                  bootstrap: builds and wires every service, boot order, shutdown
+  config.ts                 env parsing and validation
+  importer.ts               scheduler + per-channel import loop
+  server.ts                 Express API, auth, static dashboard
+  logger.ts                 Winston
+  services/
+    telegram.service.ts     GramJS client, retry/FloodWait wrapper, media metadata
+    db.service.ts           schema + queries
+    s3.service.ts           streaming upload/download
+public/                     dashboard (index.html) and login page, plain HTML/CSS/JS
+tests/                      config, importer, server (supertest)
+```
+
+Conventions for contributors and Claude Code are in [`CLAUDE.md`](CLAUDE.md), with file-specific rules in [`.claude/rules/`](.claude/rules).
+
+## Deployment
+
+Production runs the Docker image from the `deploy` branch on a single server. A push to `deploy` triggers an SSH deploy. See [docs/deployment.md](docs/deployment.md) for that flow, how to get a Telegram session into a headless container, and common operations (retrying failed channels, finding media that never uploaded).
+
+## Documentation
+
+| Doc | Read it for |
+|---|---|
+| [docs/status.md](docs/status.md) | Current checkpoint, known issues, open decisions |
+| [docs/architecture.md](docs/architecture.md) | Components, import algorithm, data model, failure behavior |
+| [docs/api.md](docs/api.md) | HTTP endpoints with request and response examples |
+| [docs/deployment.md](docs/deployment.md) | Docker, production deploy, Telegram sessions, operations |
+| [CLAUDE.md](CLAUDE.md) | Working rules for Claude Code |

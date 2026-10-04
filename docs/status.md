@@ -1,0 +1,54 @@
+# Project status
+
+Checkpoint taken **2026-10-04**, after roughly 2.5 months without commits. Development is moving to Claude Code. Update this page as items are resolved; it's the first thing to read when picking the project back up.
+
+## Where the code stands
+
+| Ref | Commit | Date | State |
+|---|---|---|---|
+| `main` | `780861a` | 2026-07-20 | Revert of PR #10. **This is the baseline.** |
+| `deploy` | `33948de` | 2026-07-20 | Same `src/` as `main`, plus the production infra (see [deployment.md](deployment.md)) |
+| `batch-processing` | `e9488b1` | 2026-07-19 | PR #10 work; merged and then reverted on `main` |
+| `feat/upgrade` | `1559139` | 2026-07-18 | Fully merged; can be deleted |
+
+**What works:** registering channels (one or many), importing full history oldest to newest with resume, media to S3, the dashboard (progress, explorer, media preview, delete), password login, and FloodWait and retry handling. 32 of 33 tests pass and `tsc` is clean.
+
+### PR #10, reverted
+
+`9f11a7e` grouped imported messages into time-window **processing chunks**, so a later stage could process a channel in pieces. It added `IMPORT_LIMIT_PER_BATCH` and `IMPORT_BUFFER_HOURS`, a `processing_chunk` table, and `telegram_messages.processing_chunk_id`. `e9488b1` fixed the pagination direction it had broken. It was merged on 2026-07-19 and reverted the next day; no reason was recorded.
+
+The revert removed the code but **not the schema**. If PR #10 ever booted against production, `processing_chunk` and the `processing_chunk_id` column are still in that database. They're harmless, but worth knowing about before you revisit chunking.
+
+## Known issues
+
+Ordered roughly by impact. None are fixed at this checkpoint.
+
+1. **Failed media is never retried automatically.** If a download or upload fails, the message is stored with `media_key = NULL`, and progress moves past it in the same batch. The "re-download when the key is NULL" path only runs if the batch is fetched again (a crash mid-batch, or a manual checkpoint rewind; see [deployment.md](deployment.md#routine-operations)).
+2. **Messages that throw are skipped for good.** Same mechanism: per-message errors are logged and the checkpoint still moves past them.
+3. **A fully local stack doesn't work on `main` without code changes.**
+   - `src/index.ts` forces `ssl: { rejectUnauthorized: true }`, and the `postgres` container has no TLS.
+   - The `S3Client` lacks `forcePathStyle: true`, so requests go to `<bucket>.minio:9000`, which MinIO in Docker can't serve. (Checked: the SDK builds virtual-hosted URLs for `http://minio:9000` and `http://localhost:9000`.)
+   - `ensureBucketExists()` is commented out, so the bucket must be created by hand.
+
+   Production (managed Postgres plus R2 or S3) is unaffected. A fix would make SSL and path-style addressing configurable through env vars.
+4. **The test suite depends on a local `.env`.** `config.test.ts › should fail if DASHBOARD_PASSWORD is missing` expects `DASHBOARD_PASSWORD` to be the *only* missing variable. It passes only when `dotenv` loads a `.env` that supplies all the others, so it fails in clean checkouts and in CI.
+5. **`completed` is terminal.** Channels aren't re-polled for new posts. Re-queue by setting `status = 'pending'`.
+6. **There's no API or UI to retry a `failed` channel.** It's SQL only.
+7. **`GET /api/channels/:id/messages` returns everything, unpaginated.** It will get slow and memory-heavy on large channels.
+8. **Deleting a channel leaves its S3 objects behind.**
+9. **Shutdown doesn't wait for running imports.** The reset on boot makes this safe, but logs can end mid-batch.
+10. **The auth token is just `sha256(password)`.** It's static, unsalted, and compared without a timing-safe check. That's fine for an internal tool, but it isn't per-user.
+11. **The deploy workflow pulls `main`, not `deploy`** (see [deployment.md](deployment.md#how-production-deploys)).
+
+## Open questions
+
+These need a decision, not just code.
+
+- **Integration with the mapper UI.** `../telegram-pipeline-ui` (last commit 2026-02-25) was built against an n8n backend: `POST` to an n8n webhook to queue, `GET /channel` and `GET /channel/:id/message` to read, and HLS (`s3_hls_url`) for audio. This service exposes `/api/channels…` and raw S3 objects with no HLS transcoding. Either the UI adapts to this API, an adapter layer is added here, or n8n keeps a role. Which one?
+- **Processing chunks.** Is grouping messages by time window (PR #10) still wanted for stage 2 or 3? If so, why was it reverted?
+- **The production server's checkout.** Which branch is `/home/scraper-user/scraper` on? Should the workflow pull `deploy` instead of `main`?
+- **Live following.** Should completed channels be re-polled on a schedule, or is this purely a one-off history importer?
+
+## Changelog
+
+- **2026-10-04**: Documentation revamp for Claude Code. `AGENTS.md` and `.agents/rules/` were replaced by `CLAUDE.md` and path-scoped `.claude/rules/`, `README.md` was rewritten, and `docs/` was added. No code changes.

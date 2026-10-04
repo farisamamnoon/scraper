@@ -53,6 +53,11 @@ postgres-data/
 .vscode/
 .idea/
 
+# Claude Code (project rules in .claude/rules/ are committed; local state is not)
+.claude/worktrees/
+.claude/settings.local.json
+CLAUDE.local.md
+
 # OS files
 .DS_Store
 Thumbs.db

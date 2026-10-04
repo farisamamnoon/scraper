@@ -1,6 +1,11 @@
+---
+paths:
+  - "public/**"
+---
+
 # Dashboard UI: Typography and Layout System
 
-> Rule for AI agents modifying `public/index.html`.
+> Applies to `public/index.html` and `public/login.html`.
 > Evidence: established in the dashboard redesign; the previous Inter/Outfit combination
 > was rejected by the user as "AI-ish".
 

@@ -1,6 +1,11 @@
+---
+paths:
+  - "public/**"
+---
+
 # Dashboard UI: Live Polling — No-Flicker DOM Update Pattern
 
-> Rule for AI agents modifying the JavaScript in `public/index.html`.
+> Applies to the JavaScript in `public/index.html`.
 > Evidence: previous implementation replaced `innerHTML` every 2 seconds, causing all
 > channel rows to re-animate. This pattern was identified and fixed.
 
