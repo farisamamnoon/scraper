@@ -1,7 +1,12 @@
+---
+paths:
+  - "public/**"
+---
+
 # Dashboard UI: Palette and Color Contract
 
-> Rule for AI agents modifying `public/index.html` or any frontend file in this project.
-> Evidence: designed and iterated in the actual dashboard (`public/index.html`).
+> Applies to `public/index.html`, `public/login.html` and any future frontend file.
+> Designed and iterated in the actual dashboard.
 
 ---
 
