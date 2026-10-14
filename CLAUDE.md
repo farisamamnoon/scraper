@@ -30,7 +30,7 @@ npx jest tests/server.test.ts -t "DELETE"   # single file / test name
 | `src/services/s3.service.ts` | Multipart streaming upload, object read stream, `ensureBucketExists` (currently not called). |
 | `src/logger.ts` | Winston. JSON in production, colorized otherwise, silent in tests. `LOG_LEVEL` env. |
 | `public/index.html` | Single-file vanilla dashboard (inline CSS/JS). `public/login.html` is the password page. |
-| `tests/` | `config`, `importer` (`extractCleanJson`), `server` (supertest) suites. |
+| `tests/` | `config`, `importer` (`extractCleanJson`), `server` (supertest), `db.service` (mocked pg pool) suites. |
 
 Deeper explanations: `docs/architecture.md` (data flow, schema, recovery), `docs/api.md` (endpoints), `docs/deployment.md` (Docker, `deploy` branch, sessions).
 
