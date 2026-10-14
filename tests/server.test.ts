@@ -729,11 +729,31 @@ describe('Express API Server Endpoints', () => {
       expect(mockDbService.getMappableMessageInfo).toHaveBeenCalledTimes(1);
     });
 
-    it('should keep the default 100 KB limit for unauthenticated requests', async () => {
+    it('should return 401 before parsing a large body from an unauthenticated caller', async () => {
       const mappings = Array.from({ length: 5000 }, (_, i) => ({ text_message_id: '55', media_message_id: String(i + 1) }));
 
-      await request(app).put('/api/channels/123456789/mappings').send({ mappings }).expect(500);
+      const response = await request(app).put('/api/channels/123456789/mappings').send({ mappings }).expect(401);
 
+      expect(response.body).toEqual({ success: false, error: 'Unauthorized' });
+      expect(mockDbService.getChannelProgress).not.toHaveBeenCalled();
+    });
+
+    it('should return 413 for a body above 5 MB', async () => {
+      const response = await put({ mappings: [], padding: 'x'.repeat(5 * 1024 * 1024) }).expect(413);
+
+      expect(response.body).toEqual({ success: false, error: 'Request body exceeds the 5 MB limit.' });
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it('should return 400 for a malformed JSON body', async () => {
+      const response = await request(app)
+        .put('/api/channels/123456789/mappings')
+        .set('Cookie', authCookie)
+        .set('Content-Type', 'application/json')
+        .send('{"mappings": [')
+        .expect(400);
+
+      expect(response.body).toEqual({ success: false, error: 'Request body is not valid JSON.' });
       expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
     });
   });

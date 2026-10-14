@@ -41,7 +41,7 @@ Ordered roughly by impact. None are fixed at this checkpoint.
 11. **The deploy workflow pulls `main`, not `deploy`** (see [deployment.md](deployment.md#how-production-deploys)).
 12. **Mappings: the last write wins, with no history.** `PUT /api/channels/:id/mappings` replaces the whole set. Two editors on the same channel overwrite each other, and there is no history and no undo.
 13. **Mappings are checked only at write time.** A later re-import can change a message (for example, an edit that removes its text). The stored mapping stays, and only the next PUT checks it again.
-14. **Body-parser errors return `500`.** The global error handler maps every error to 500, so a body over the size limit (`413`) or malformed JSON (`400`) reaches the client as `500 An internal server error occurred.`
+14. **Body-parser errors return `500` on most routes.** The global error handler maps every error to 500, so a body over the size limit or malformed JSON reaches the client as `500 An internal server error occurred.` Only `PUT /api/channels/:id/mappings` returns `413` and `400` for these.
 15. **`TIMESTAMP` columns are read as Node's local time.** `telegram_channels` and `telegram_messages` use `TIMESTAMP` without a time zone. node-pg parses those values as local time, so API times are off by the server's UTC offset when the Node process does not run in UTC. `channel_mappings` uses `TIMESTAMPTZ` and is not affected.
 
 ## Open questions

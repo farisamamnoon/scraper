@@ -183,8 +183,9 @@ Checks 5 and 6 run only when checks 1–4 pass, and use one database query for t
 | Status | Body |
 |---|---|
 | 200 | `{"success": true, "channel_id": "1234567890", "count": 100, "updated_at": "<ISO>"}` |
-| 400 | `Invalid channel ID.`, or the problem list below |
+| 400 | `Request body is not valid JSON.`, `Invalid channel ID.`, or the problem list below |
 | 404 | `Channel not found.` |
+| 413 | `Request body exceeds the 5 MB limit.` |
 
 A rejected set returns the first problem as `error`, and up to 20 problems in `details`. `index` is the item position, and is absent for problems with the whole `mappings` field:
 
@@ -196,7 +197,7 @@ A rejected set returns the first problem as `error`, and up to 20 problems in `d
 }
 ```
 
-**Body size.** This route accepts JSON bodies up to **5 MB** from an authenticated caller (5,000 pairs are about 385 KB). All other routes, and unauthenticated calls to this route, keep the default 100 KB limit. A body over the limit returns `500` through the global error handler, not `413`.
+**Body size.** This route accepts JSON bodies up to **5 MB** (5,000 pairs are about 385 KB; 50,000 pairs are about 4 MB). The auth check runs before the body is parsed, so an unauthenticated call gets `401` whatever its size. All other routes keep the default 100 KB limit.
 
 **While importing.** A `running` channel accepts mapping writes. Mappings reference only stored messages, and the validation checks that.
 

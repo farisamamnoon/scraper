@@ -114,12 +114,31 @@ export function createServer(
 
   const app = express();
 
-  // Mapping sets exceed the default 100 KB JSON limit. Parse them with a larger limit,
-  // but only for authenticated callers; the global parser then skips the parsed body.
+  // API auth middleware
+  const apiAuthMiddleware = (req: Request, res: Response, next: NextFunction) => {
+    if (!isAuthed(req)) {
+      res.status(401).json({ success: false, error: 'Unauthorized' });
+      return;
+    }
+    next();
+  };
+
+  // Mapping sets exceed the default 100 KB JSON limit. Authenticate first, then parse with a
+  // larger limit; the global parser skips a body that is already parsed. Body errors get their
+  // own statuses here, so the mapper UI can tell them apart from server errors.
   const mappingsJsonParser = express.json({ limit: MAPPINGS_BODY_LIMIT });
-  app.put(MAPPINGS_PATH, (req: Request, res: Response, next: NextFunction) => {
-    if (!isAuthed(req)) return next();
-    mappingsJsonParser(req, res, next);
+  app.put(MAPPINGS_PATH, apiAuthMiddleware, (req: Request, res: Response, next: NextFunction) => {
+    mappingsJsonParser(req, res, (err?: any) => {
+      if (err?.type === 'entity.too.large') {
+        res.status(413).json({ success: false, error: 'Request body exceeds the 5 MB limit.' });
+        return;
+      }
+      if (err?.type === 'entity.parse.failed') {
+        res.status(400).json({ success: false, error: 'Request body is not valid JSON.' });
+        return;
+      }
+      next(err);
+    });
   });
 
   app.use(express.json());
@@ -157,15 +176,6 @@ export function createServer(
       res.status(401).json({ success: false, error: 'Incorrect password.' });
     }
   });
-
-  // API auth middleware
-  const apiAuthMiddleware = (req: Request, res: Response, next: NextFunction) => {
-    if (!isAuthed(req)) {
-      res.status(401).json({ success: false, error: 'Unauthorized' });
-      return;
-    }
-    next();
-  };
 
   const handleValidationErrors = (req: Request, res: Response, next: NextFunction) => {
     const errors = validationResult(req);
