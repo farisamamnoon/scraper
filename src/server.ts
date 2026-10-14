@@ -3,7 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { matchedData, param, query, validationResult } from 'express-validator';
 import { DbService } from './services/db.service';
-import type { ChannelStatus, MappingInput, MappingSource } from './services/db.service';
+import type { ChannelProgress, ChannelStatus, MappingInput, MappingSource } from './services/db.service';
 import { Importer } from './importer';
 import { TelegramService } from './services/telegram.service';
 import { S3Service } from './services/s3.service';
@@ -43,8 +43,8 @@ function parseTelegramId(value: unknown): string | null {
 /**
  * Checks the shape of a PUT mappings body. Returns the normalized mappings, or the problems found.
  */
-function parseMappingsBody(body: any): { mappings: MappingInput[]; problems: MappingProblem[] } {
-  const raw = body?.mappings;
+function parseMappingsBody(body: unknown): { mappings: MappingInput[]; problems: MappingProblem[] } {
+  const raw = (body as { mappings?: unknown } | null | undefined)?.mappings;
   if (!Array.isArray(raw)) {
     return { mappings: [], problems: [{ field: 'mappings', reason: 'must be an array.' }] };
   }
@@ -56,14 +56,15 @@ function parseMappingsBody(body: any): { mappings: MappingInput[]; problems: Map
   const problems: MappingProblem[] = [];
   const seenMedia = new Map<string, number>();
 
-  raw.forEach((item: any, index: number) => {
+  raw.forEach((item: unknown, index: number) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
       problems.push({ index, field: 'mappings', reason: 'must be an object.' });
       return;
     }
-    const textId = parseTelegramId(item.text_message_id);
-    const mediaId = parseTelegramId(item.media_message_id);
-    const source = item.source ?? 'unknown';
+    const fields = item as Record<string, unknown>;
+    const textId = parseTelegramId(fields.text_message_id);
+    const mediaId = parseTelegramId(fields.media_message_id);
+    const source = (fields.source ?? 'unknown') as MappingSource;
 
     if (!textId) problems.push({ index, field: 'text_message_id', reason: 'must be a positive integer message ID.' });
     if (!mediaId) problems.push({ index, field: 'media_message_id', reason: 'must be a positive integer message ID.' });
@@ -86,8 +87,10 @@ function parseMappingsBody(body: any): { mappings: MappingInput[]; problems: Map
   return { mappings, problems };
 }
 
-const describeMappingProblem = (p: MappingProblem): string =>
-  p.index === undefined ? `${p.field} ${p.reason}` : `mappings[${p.index}].${p.field} ${p.reason}`;
+const describeMappingProblem = (problem: MappingProblem): string =>
+  problem.index === undefined
+    ? `${problem.field} ${problem.reason}`
+    : `mappings[${problem.index}].${problem.field} ${problem.reason}`;
 
 export function createServer(
   dbService: DbService,
@@ -502,6 +505,22 @@ export function createServer(
     .withMessage('Invalid channel ID.');
 
   /**
+   * Resolves a validated :channelId to a tracked channel. Sends 404 and returns null when it is not tracked.
+   */
+  const findTrackedChannel = async (
+    req: Request,
+    res: Response
+  ): Promise<{ channelId: string; channel: ChannelProgress } | null> => {
+    const channelId = parseTelegramId(req.params.channelId) as string;
+    const channel = await dbService.getChannelProgress(channelId);
+    if (!channel) {
+      res.status(404).json({ success: false, error: 'Channel not found.' });
+      return null;
+    }
+    return { channelId, channel };
+  };
+
+  /**
    * PUT /api/channels/:channelId/mappings
    * Replaces the full set of text↔audio mappings for a channel. All-or-nothing: any invalid item rejects the request.
    */
@@ -511,34 +530,31 @@ export function createServer(
     [channelIdParam, handleValidationErrors],
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const channelId = parseTelegramId(req.params.channelId) as string;
-        const progress = await dbService.getChannelProgress(channelId);
-        if (!progress) {
-          res.status(404).json({ success: false, error: 'Channel not found.' });
-          return;
-        }
+        const tracked = await findTrackedChannel(req, res);
+        if (!tracked) return;
+        const { channelId, channel } = tracked;
 
         // Hand-validated, not express-validator: the checks are all-or-nothing over up to
         // 50,000 items, report per-item details, and end in one set-based DB lookup.
         const { mappings, problems } = parseMappingsBody(req.body);
 
         if (problems.length === 0 && mappings.length > 0) {
-          const ids = new Set<string>();
-          mappings.forEach((m) => {
-            ids.add(m.text_message_id);
-            ids.add(m.media_message_id);
+          const messageIds = new Set<string>();
+          mappings.forEach((mapping) => {
+            messageIds.add(mapping.text_message_id);
+            messageIds.add(mapping.media_message_id);
           });
-          const info = await dbService.getMappableMessageInfo(channelId, [...ids]);
-          const byId = new Map(info.map((row) => [row.message_id, row]));
+          const messageInfo = await dbService.getMappableMessageInfo(channelId, [...messageIds]);
+          const messagesById = new Map(messageInfo.map((row) => [row.message_id, row]));
 
-          mappings.forEach((m, index) => {
-            const media = byId.get(m.media_message_id);
+          mappings.forEach((mapping, index) => {
+            const media = messagesById.get(mapping.media_message_id);
             if (!media) {
               problems.push({ index, field: 'media_message_id', reason: 'is not a stored message of this channel.' });
             } else if (!media.is_audio) {
               problems.push({ index, field: 'media_message_id', reason: 'is not an audio or voice message.' });
             }
-            const text = byId.get(m.text_message_id);
+            const text = messagesById.get(mapping.text_message_id);
             if (!text) {
               problems.push({ index, field: 'text_message_id', reason: 'is not a stored message of this channel.' });
             } else if (!text.has_text) {
@@ -557,7 +573,7 @@ export function createServer(
         }
 
         const result = await dbService.replaceChannelMappings(channelId, mappings);
-        logger.info(`REST API: Stored ${result.count} mappings for channel @${progress.channel_username || channelId}.`);
+        logger.info(`REST API: Stored ${result.count} mappings for channel @${channel.channel_username || channelId}.`);
 
         res.json({
           success: true,
@@ -581,23 +597,17 @@ export function createServer(
     [channelIdParam, handleValidationErrors],
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const channelId = parseTelegramId(req.params.channelId) as string;
-        const progress = await dbService.getChannelProgress(channelId);
-        if (!progress) {
-          res.status(404).json({ success: false, error: 'Channel not found.' });
-          return;
-        }
+        const tracked = await findTrackedChannel(req, res);
+        if (!tracked) return;
+        const { channelId } = tracked;
 
         const mappings = await dbService.getChannelMappings(channelId);
-        const latest = mappings.reduce<Date | null>(
-          (max, m) => (max === null || new Date(m.updated_at) > max ? new Date(m.updated_at) : max),
-          null
-        );
+        const latestMs = mappings.reduce((max, mapping) => Math.max(max, mapping.updated_at.getTime()), -Infinity);
 
         res.json({
           success: true,
           channel_id: channelId,
-          updated_at: latest,
+          updated_at: mappings.length > 0 ? new Date(latestMs) : null,
           mappings
         });
       } catch (err) {
