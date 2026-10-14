@@ -28,6 +28,7 @@ describe('DbService', () => {
       expect(sql).toContain('CREATE TABLE IF NOT EXISTS channel_mappings');
       expect(sql).toContain('PRIMARY KEY (channel_id, media_message_id)');
       expect(sql).toContain("CHECK (source IN ('manual', 'auto', 'unknown'))");
+      expect(sql).toContain('updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()');
       expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS \w+\s+ON channel_mappings \(channel_id, text_message_id\)/);
       expect(clientSql()[clientSql().length - 1]).toBe('COMMIT');
     });

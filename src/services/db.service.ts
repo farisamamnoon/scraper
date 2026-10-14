@@ -101,8 +101,8 @@ export class DbService {
             media_message_id BIGINT NOT NULL,
             text_message_id BIGINT NOT NULL,
             source TEXT NOT NULL CHECK (source IN ('manual', 'auto', 'unknown')),
-            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             PRIMARY KEY (channel_id, media_message_id)
         );
       `);
