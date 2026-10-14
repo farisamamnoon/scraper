@@ -756,6 +756,16 @@ describe('Express API Server Endpoints', () => {
       expect(response.body).toEqual({ success: false, error: 'Request body is not valid JSON.' });
       expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
     });
+
+    it('should return 500 when the database write fails', async () => {
+      mockDbService.replaceChannelMappings.mockRejectedValue(new Error('connection lost'));
+
+      const response = await put({
+        mappings: [{ text_message_id: '55', media_message_id: '67', source: 'manual' }],
+      }).expect(500);
+
+      expect(response.body).toEqual({ success: false, error: 'An internal server error occurred.' });
+    });
   });
 
   describe('GET /api/channels/:channelId/mappings', () => {
@@ -811,6 +821,28 @@ describe('Express API Server Endpoints', () => {
 
       expect(response.body).toEqual({ success: false, error: 'Channel not found.' });
       expect(mockDbService.getChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it('should return 400 for a malformed channel ID', async () => {
+      const response = await request(app)
+        .get('/api/channels/abc/mappings')
+        .set('Cookie', authCookie)
+        .expect(400);
+
+      expect(response.body).toEqual({ success: false, error: 'Invalid channel ID.' });
+      expect(mockDbService.getChannelProgress).not.toHaveBeenCalled();
+    });
+
+    it('should return 500 when the database read fails', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue({ channel_id: '123456789' } as any);
+      mockDbService.getChannelMappings.mockRejectedValue(new Error('connection lost'));
+
+      const response = await request(app)
+        .get('/api/channels/123456789/mappings')
+        .set('Cookie', authCookie)
+        .expect(500);
+
+      expect(response.body).toEqual({ success: false, error: 'An internal server error occurred.' });
     });
   });
 });
