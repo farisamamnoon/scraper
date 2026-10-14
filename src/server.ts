@@ -459,7 +459,7 @@ export function createServer(
 
   /**
    * DELETE /api/channels/:channelId
-   * Deletes a channel and all its stored messages.
+   * Deletes a channel, all its stored messages and all its mappings.
    */
   app.delete('/api/channels/:channelId', apiAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -518,6 +518,8 @@ export function createServer(
           return;
         }
 
+        // Hand-validated, not express-validator: the checks are all-or-nothing over up to
+        // 50,000 items, report per-item details, and end in one set-based DB lookup.
         const { mappings, problems } = parseMappingsBody(req.body);
 
         if (problems.length === 0 && mappings.length > 0) {
