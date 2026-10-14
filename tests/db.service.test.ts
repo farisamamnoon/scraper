@@ -108,6 +108,19 @@ describe('DbService', () => {
     });
   });
 
+  describe('channel lists', () => {
+    it('should include mapping_count in getAllChannels and listChannels', async () => {
+      mockPool.query.mockResolvedValue({ rows: [{ total: 0 }] });
+
+      await dbService.getAllChannels();
+      await dbService.listChannels({ limit: 50, offset: 0 });
+
+      const listSql = mockPool.query.mock.calls.map(([sql]) => String(sql)).filter((sql) => sql.includes('message_count'));
+      expect(listSql).toHaveLength(2);
+      listSql.forEach((sql) => expect(sql).toContain('as mapping_count'));
+    });
+  });
+
   describe('getMappableMessageInfo', () => {
     it('should look up all IDs in one set-based query', async () => {
       await dbService.getMappableMessageInfo('123456789', ['55', '67', '68']);

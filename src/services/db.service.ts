@@ -15,6 +15,7 @@ export interface ChannelProgress {
 
 export interface ChannelProgressWithCount extends ChannelProgress {
   message_count: number;
+  mapping_count: number;
 }
 
 export type MappingSource = 'manual' | 'auto' | 'unknown';
@@ -278,7 +279,8 @@ export class DbService {
         c.import_completed_at, 
         c.last_processed_message_id::TEXT, 
         c.status,
-        COALESCE(COUNT(m.id), 0)::INTEGER as message_count
+        COALESCE(COUNT(m.id), 0)::INTEGER as message_count,
+        (SELECT COUNT(*) FROM channel_mappings cm WHERE cm.channel_id = c.channel_id)::INTEGER as mapping_count
       FROM telegram_channels c
       LEFT JOIN telegram_messages m ON c.channel_id = m.channel_id
       GROUP BY c.channel_id, c.channel_username, c.title, c.import_started_at, c.import_completed_at, c.last_processed_message_id, c.status
@@ -321,7 +323,8 @@ export class DbService {
         c.import_completed_at,
         c.last_processed_message_id::TEXT,
         c.status,
-        COALESCE(COUNT(m.id), 0)::INTEGER as message_count
+        COALESCE(COUNT(m.id), 0)::INTEGER as message_count,
+        (SELECT COUNT(*) FROM channel_mappings cm WHERE cm.channel_id = c.channel_id)::INTEGER as mapping_count
       FROM telegram_channels c
       LEFT JOIN telegram_messages m ON c.channel_id = m.channel_id
       ${whereSql}
