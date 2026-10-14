@@ -1,13 +1,93 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import crypto from 'crypto';
-import { matchedData, query, validationResult } from 'express-validator';
+import { matchedData, param, query, validationResult } from 'express-validator';
 import { DbService } from './services/db.service';
-import type { ChannelStatus } from './services/db.service';
+import type { ChannelStatus, MappingInput, MappingSource } from './services/db.service';
 import { Importer } from './importer';
 import { TelegramService } from './services/telegram.service';
 import { S3Service } from './services/s3.service';
 import { logger } from './logger';
+
+const MAPPINGS_PATH = '/api/channels/:channelId/mappings';
+const MAX_MAPPINGS = 50000;
+const MAX_MAPPING_PROBLEMS = 20;
+const MAPPINGS_BODY_LIMIT = '5mb';
+const MAX_BIGINT = BigInt('9223372036854775807');
+const mappingSources: MappingSource[] = ['manual', 'auto', 'unknown'];
+
+interface MappingProblem {
+  index?: number;
+  field: string;
+  reason: string;
+}
+
+/**
+ * Parses a Telegram ID sent as a digit string or an integer into its canonical digit string.
+ * Returns null unless it is a positive integer that fits in BIGINT.
+ */
+function parseTelegramId(value: unknown): string | null {
+  let digits: string;
+  if (typeof value === 'string' && /^\d+$/.test(value)) {
+    digits = value;
+  } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    digits = value.toString();
+  } else {
+    return null;
+  }
+  const id = BigInt(digits);
+  if (id <= BigInt(0) || id > MAX_BIGINT) return null;
+  return id.toString();
+}
+
+/**
+ * Checks the shape of a PUT mappings body. Returns the normalized mappings, or the problems found.
+ */
+function parseMappingsBody(body: any): { mappings: MappingInput[]; problems: MappingProblem[] } {
+  const raw = body?.mappings;
+  if (!Array.isArray(raw)) {
+    return { mappings: [], problems: [{ field: 'mappings', reason: 'must be an array.' }] };
+  }
+  if (raw.length > MAX_MAPPINGS) {
+    return { mappings: [], problems: [{ field: 'mappings', reason: `must contain at most ${MAX_MAPPINGS} items.` }] };
+  }
+
+  const mappings: MappingInput[] = [];
+  const problems: MappingProblem[] = [];
+  const seenMedia = new Map<string, number>();
+
+  raw.forEach((item: any, index: number) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      problems.push({ index, field: 'mappings', reason: 'must be an object.' });
+      return;
+    }
+    const textId = parseTelegramId(item.text_message_id);
+    const mediaId = parseTelegramId(item.media_message_id);
+    const source = item.source ?? 'unknown';
+
+    if (!textId) problems.push({ index, field: 'text_message_id', reason: 'must be a positive integer message ID.' });
+    if (!mediaId) problems.push({ index, field: 'media_message_id', reason: 'must be a positive integer message ID.' });
+    if (!mappingSources.includes(source)) {
+      problems.push({ index, field: 'source', reason: `must be one of: ${mappingSources.join(', ')}.` });
+    }
+    if (mediaId) {
+      const firstIndex = seenMedia.get(mediaId);
+      if (firstIndex !== undefined) {
+        problems.push({ index, field: 'media_message_id', reason: `duplicate of index ${firstIndex}; an audio can map to one text only.` });
+      } else {
+        seenMedia.set(mediaId, index);
+      }
+    }
+    if (textId && mediaId) {
+      mappings.push({ text_message_id: textId, media_message_id: mediaId, source });
+    }
+  });
+
+  return { mappings, problems };
+}
+
+const describeMappingProblem = (p: MappingProblem): string =>
+  p.index === undefined ? `${p.field} ${p.reason}` : `mappings[${p.index}].${p.field} ${p.reason}`;
 
 export function createServer(
   dbService: DbService,
@@ -33,6 +113,14 @@ export function createServer(
   };
 
   const app = express();
+
+  // Mapping sets exceed the default 100 KB JSON limit. Parse them with a larger limit,
+  // but only for authenticated callers; the global parser then skips the parsed body.
+  const mappingsJsonParser = express.json({ limit: MAPPINGS_BODY_LIMIT });
+  app.put(MAPPINGS_PATH, (req: Request, res: Response, next: NextFunction) => {
+    if (!isAuthed(req)) return next();
+    mappingsJsonParser(req, res, next);
+  });
 
   app.use(express.json());
 
@@ -398,6 +486,113 @@ export function createServer(
       next(err);
     }
   });
+
+  const channelIdParam = param('channelId')
+    .custom((value) => parseTelegramId(value) !== null)
+    .withMessage('Invalid channel ID.');
+
+  /**
+   * PUT /api/channels/:channelId/mappings
+   * Replaces the full set of text↔audio mappings for a channel. All-or-nothing: any invalid item rejects the request.
+   */
+  app.put(
+    MAPPINGS_PATH,
+    apiAuthMiddleware,
+    [channelIdParam, handleValidationErrors],
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const channelId = parseTelegramId(req.params.channelId) as string;
+        const progress = await dbService.getChannelProgress(channelId);
+        if (!progress) {
+          res.status(404).json({ success: false, error: 'Channel not found.' });
+          return;
+        }
+
+        const { mappings, problems } = parseMappingsBody(req.body);
+
+        if (problems.length === 0 && mappings.length > 0) {
+          const ids = new Set<string>();
+          mappings.forEach((m) => {
+            ids.add(m.text_message_id);
+            ids.add(m.media_message_id);
+          });
+          const info = await dbService.getMappableMessageInfo(channelId, [...ids]);
+          const byId = new Map(info.map((row) => [row.message_id, row]));
+
+          mappings.forEach((m, index) => {
+            const media = byId.get(m.media_message_id);
+            if (!media) {
+              problems.push({ index, field: 'media_message_id', reason: 'is not a stored message of this channel.' });
+            } else if (!media.is_audio) {
+              problems.push({ index, field: 'media_message_id', reason: 'is not an audio or voice message.' });
+            }
+            const text = byId.get(m.text_message_id);
+            if (!text) {
+              problems.push({ index, field: 'text_message_id', reason: 'is not a stored message of this channel.' });
+            } else if (!text.has_text) {
+              problems.push({ index, field: 'text_message_id', reason: 'has no text.' });
+            }
+          });
+        }
+
+        if (problems.length > 0) {
+          res.status(400).json({
+            success: false,
+            error: describeMappingProblem(problems[0]),
+            details: problems.slice(0, MAX_MAPPING_PROBLEMS)
+          });
+          return;
+        }
+
+        const result = await dbService.replaceChannelMappings(channelId, mappings);
+        logger.info(`REST API: Stored ${result.count} mappings for channel @${progress.channel_username || channelId}.`);
+
+        res.json({
+          success: true,
+          channel_id: channelId,
+          count: result.count,
+          updated_at: result.updated_at
+        });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  /**
+   * GET /api/channels/:channelId/mappings
+   * Returns the stored text↔audio mappings for a channel, ordered by audio message ID.
+   */
+  app.get(
+    MAPPINGS_PATH,
+    apiAuthMiddleware,
+    [channelIdParam, handleValidationErrors],
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const channelId = parseTelegramId(req.params.channelId) as string;
+        const progress = await dbService.getChannelProgress(channelId);
+        if (!progress) {
+          res.status(404).json({ success: false, error: 'Channel not found.' });
+          return;
+        }
+
+        const mappings = await dbService.getChannelMappings(channelId);
+        const latest = mappings.reduce<Date | null>(
+          (max, m) => (max === null || new Date(m.updated_at) > max ? new Date(m.updated_at) : max),
+          null
+        );
+
+        res.json({
+          success: true,
+          channel_id: channelId,
+          updated_at: latest,
+          mappings
+        });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
 
   /**
    * GET /api/media

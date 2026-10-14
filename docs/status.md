@@ -39,6 +39,10 @@ Ordered roughly by impact. None are fixed at this checkpoint.
 9. **Shutdown doesn't wait for running imports.** The reset on boot makes this safe, but logs can end mid-batch.
 10. **The auth token is just `sha256(password)`.** It's static, unsalted, and compared without a timing-safe check. That's fine for an internal tool, but it isn't per-user.
 11. **The deploy workflow pulls `main`, not `deploy`** (see [deployment.md](deployment.md#how-production-deploys)).
+12. **Mappings: the last write wins, with no history.** `PUT /api/channels/:id/mappings` replaces the whole set. Two editors on the same channel overwrite each other, and there is no history and no undo.
+13. **Mappings are checked only at write time.** A later re-import can change a message (for example, an edit that removes its text). The stored mapping stays, and only the next PUT checks it again.
+14. **Body-parser errors return `500`.** The global error handler maps every error to 500, so a body over the size limit (`413`) or malformed JSON (`400`) reaches the client as `500 An internal server error occurred.`
+15. **`TIMESTAMP` columns are read as Node's local time.** `telegram_channels` and `telegram_messages` use `TIMESTAMP` without a time zone. node-pg parses those values as local time, so API times are off by the server's UTC offset when the Node process does not run in UTC. `channel_mappings` uses `TIMESTAMPTZ` and is not affected.
 
 ## Open questions
 
@@ -51,4 +55,5 @@ These need a decision, not just code.
 
 ## Changelog
 
+- **2026-10-15**: Mapper integration, gap 1. New `channel_mappings` table, plus `PUT` and `GET /api/channels/:channelId/mappings` to store and read text↔audio pairs. `DELETE /api/channels/:channelId` now also deletes the channel's mappings. Known issues 12–15 added.
 - **2026-10-04**: Documentation revamp for Claude Code. `AGENTS.md` and `.agents/rules/` were replaced by `CLAUDE.md` and path-scoped `.claude/rules/`, `README.md` was rewritten, and `docs/` was added. No code changes.

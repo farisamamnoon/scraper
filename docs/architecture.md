@@ -6,7 +6,7 @@ How the importer is put together, what it stores, and how it behaves when things
 
 The wider project migrates audio lectures (and their text descriptions) out of Telegram channels into a structured database. It has four stages: export → map audio to descriptions → LLM cleanup/tagging → validated delivery.
 
-This repo is **stage 1, export**. It pulls every message and attachment from a public channel and stores them in a form later stages can query. Stage 2 is the Next.js mapper in `../telegram-pipeline-ui`. That UI was written against an earlier n8n-based backend, so its API contract doesn't match this service yet (see [status.md](status.md#open-questions)).
+This repo is **stage 1, export**. It pulls every message and attachment from a public channel and stores them in a form later stages can query. Stage 2 is the Next.js mapper in `../telegram-pipeline-ui`. That UI was written against an earlier n8n-based backend, so its API contract doesn't match this service yet (see [status.md](status.md#open-questions)). The mapper stores its text↔audio pairs here, in `channel_mappings`.
 
 ## Components
 
@@ -78,7 +78,7 @@ Every Telegram call (resolve, fetch, download) goes through `executeWithRetry`. 
 
 ## Data model
 
-Both tables are created by `DbService.initializeSchema()`.
+All tables are created by `DbService.initializeSchema()`.
 
 ### `telegram_channels`
 
@@ -105,7 +105,20 @@ A `failed` channel stays failed until something sets it back to `pending`. There
 | `media_key` | `TEXT` | S3 key, or `NULL` (no media, or the upload failed) |
 | `imported_at` | `TIMESTAMP` | Default `NOW()` |
 
-There's no foreign key between the tables. `deleteChannel` removes both sides in one transaction.
+### `channel_mappings`
+
+Text↔audio pairs written by the mapper UI through `PUT /api/channels/:channelId/mappings` (see [api.md](api.md#mappings)).
+
+| Column | Type | Notes |
+|---|---|---|
+| `channel_id`, `media_message_id` | `BIGINT` | `PRIMARY KEY`: one text per audio |
+| `text_message_id` | `BIGINT` | Indexed with `channel_id`. One text can serve many audios |
+| `source` | `TEXT` | `CHECK` in `manual`, `auto`, `unknown` |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` | Default `NOW()`. Time zone aware, unlike the older tables, so the API returns correct UTC times |
+
+A PUT replaces the channel's whole set: `DELETE` plus one bulk `INSERT … SELECT FROM unnest(…)` in a transaction. The IDs refer to `telegram_messages.message_id` of the same channel. The API checks that at write time.
+
+There are no foreign keys between the tables. `deleteChannel` removes the channel, its messages and its mappings in one transaction.
 
 ### `telegram_json` shape
 

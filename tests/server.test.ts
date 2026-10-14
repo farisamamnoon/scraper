@@ -27,6 +27,9 @@ describe('Express API Server Endpoints', () => {
       getChannelProgress: jest.fn().mockResolvedValue(null),
       getChannelMessages: jest.fn(),
       deleteChannel: jest.fn().mockResolvedValue(undefined),
+      getMappableMessageInfo: jest.fn(),
+      replaceChannelMappings: jest.fn(),
+      getChannelMappings: jest.fn(),
     } as unknown as jest.Mocked<DbService>;
 
     mockImporter = {
@@ -501,6 +504,293 @@ describe('Express API Server Endpoints', () => {
       expect(response.body.success).toBe(false);
       expect(response.body.error).toContain('Channel not found');
       expect(mockDbService.deleteChannel).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PUT /api/channels/:channelId/mappings', () => {
+    const channel = {
+      channel_id: '123456789',
+      channel_username: 'telegram',
+      title: 'Telegram News',
+      status: 'running',
+    } as any;
+    const updatedAt = new Date('2026-10-14T18:00:00.000Z');
+
+    // 55, 56: text posts. 67, 68: audio. 69: audio with caption. 70: photo with caption.
+    const storedMessages: Record<string, { is_audio: boolean; has_text: boolean }> = {
+      '55': { is_audio: false, has_text: true },
+      '56': { is_audio: false, has_text: true },
+      '67': { is_audio: true, has_text: false },
+      '68': { is_audio: true, has_text: false },
+      '69': { is_audio: true, has_text: true },
+      '70': { is_audio: false, has_text: true },
+    };
+
+    beforeEach(() => {
+      mockDbService.getChannelProgress.mockResolvedValue(channel);
+      mockDbService.getMappableMessageInfo.mockImplementation(async (_channelId, ids) =>
+        ids.filter((id) => storedMessages[id]).map((id) => ({ message_id: id, ...storedMessages[id] }))
+      );
+      mockDbService.replaceChannelMappings.mockImplementation(async (_channelId, mappings) => ({
+        count: mappings.length,
+        updated_at: updatedAt,
+      }));
+    });
+
+    const put = (body: any) =>
+      request(app).put('/api/channels/123456789/mappings').set('Cookie', authCookie).send(body);
+
+    it('should return 401 Unauthorized without the auth cookie', async () => {
+      const response = await request(app)
+        .put('/api/channels/123456789/mappings')
+        .send({ mappings: [] })
+        .expect(401);
+
+      expect(response.body).toEqual({ success: false, error: 'Unauthorized' });
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it('should replace the mappings and normalize IDs and source', async () => {
+      const response = await put({
+        mappings: [
+          { text_message_id: '55', media_message_id: '67', source: 'manual' },
+          { text_message_id: 55, media_message_id: 68, source: 'auto' },
+          { text_message_id: '69', media_message_id: '69' },
+        ],
+      }).expect(200);
+
+      expect(response.body).toEqual({
+        success: true,
+        channel_id: '123456789',
+        count: 3,
+        updated_at: updatedAt.toISOString(),
+      });
+      expect(mockDbService.getMappableMessageInfo).toHaveBeenCalledTimes(1);
+      expect(mockDbService.replaceChannelMappings).toHaveBeenCalledWith('123456789', [
+        { text_message_id: '55', media_message_id: '67', source: 'manual' },
+        { text_message_id: '55', media_message_id: '68', source: 'auto' },
+        { text_message_id: '69', media_message_id: '69', source: 'unknown' },
+      ]);
+    });
+
+    it('should clear the mappings for an empty array', async () => {
+      const response = await put({ mappings: [] }).expect(200);
+
+      expect(response.body.count).toBe(0);
+      expect(mockDbService.getMappableMessageInfo).not.toHaveBeenCalled();
+      expect(mockDbService.replaceChannelMappings).toHaveBeenCalledWith('123456789', []);
+    });
+
+    it('should return 404 for an unknown channel', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue(null);
+
+      const response = await put({ mappings: [] }).expect(404);
+
+      expect(response.body).toEqual({ success: false, error: 'Channel not found.' });
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it('should return 400 for a malformed channel ID', async () => {
+      const response = await request(app)
+        .put('/api/channels/abc/mappings')
+        .set('Cookie', authCookie)
+        .send({ mappings: [] })
+        .expect(400);
+
+      expect(response.body.error).toBe('Invalid channel ID.');
+      expect(mockDbService.getChannelProgress).not.toHaveBeenCalled();
+    });
+
+    it('should return 400 when mappings is not an array', async () => {
+      const response = await put({ mappings: { text_message_id: '55' } }).expect(400);
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'mappings must be an array.',
+        details: [{ field: 'mappings', reason: 'must be an array.' }],
+      });
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a non-digit string', 'abc'],
+      ['zero', 0],
+      ['a negative number', -5],
+      ['a decimal', 1.5],
+      ['a value beyond BIGINT', '9223372036854775808'],
+      ['a missing value', undefined],
+    ])('should return 400 for %s as message ID', async (_label, badId) => {
+      const response = await put({
+        mappings: [
+          { text_message_id: '55', media_message_id: '67' },
+          { text_message_id: '55', media_message_id: badId },
+        ],
+      }).expect(400);
+
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toBe('mappings[1].media_message_id must be a positive integer message ID.');
+      expect(response.body.details).toEqual([
+        { index: 1, field: 'media_message_id', reason: 'must be a positive integer message ID.' },
+      ]);
+      expect(mockDbService.getMappableMessageInfo).not.toHaveBeenCalled();
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it('should return 400 for a duplicate media_message_id', async () => {
+      const response = await put({
+        mappings: [
+          { text_message_id: '55', media_message_id: '67' },
+          { text_message_id: '56', media_message_id: '067' },
+        ],
+      }).expect(400);
+
+      expect(response.body.details).toEqual([
+        { index: 1, field: 'media_message_id', reason: 'duplicate of index 0; an audio can map to one text only.' },
+      ]);
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it('should return 400 for an invalid source', async () => {
+      const response = await put({
+        mappings: [{ text_message_id: '55', media_message_id: '67', source: 'robot' }],
+      }).expect(400);
+
+      expect(response.body.error).toBe('mappings[0].source must be one of: manual, auto, unknown.');
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it('should return 400 for message IDs not stored in the channel', async () => {
+      const response = await put({
+        mappings: [
+          { text_message_id: '55', media_message_id: '67' },
+          { text_message_id: '999', media_message_id: '998' },
+        ],
+      }).expect(400);
+
+      expect(response.body.error).toBe('mappings[1].media_message_id is not a stored message of this channel.');
+      expect(response.body.details).toEqual([
+        { index: 1, field: 'media_message_id', reason: 'is not a stored message of this channel.' },
+        { index: 1, field: 'text_message_id', reason: 'is not a stored message of this channel.' },
+      ]);
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it('should return 400 when the media message is not audio', async () => {
+      const response = await put({
+        mappings: [{ text_message_id: '55', media_message_id: '70' }],
+      }).expect(400);
+
+      expect(response.body.error).toBe('mappings[0].media_message_id is not an audio or voice message.');
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it('should return 400 when the text message has no text', async () => {
+      const response = await put({
+        mappings: [{ text_message_id: '68', media_message_id: '67' }],
+      }).expect(400);
+
+      expect(response.body.error).toBe('mappings[0].text_message_id has no text.');
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it('should cap details at 20 entries', async () => {
+      const mappings = Array.from({ length: 30 }, (_, i) => ({ text_message_id: 'x', media_message_id: String(1000 + i) }));
+
+      const response = await put({ mappings }).expect(400);
+
+      expect(response.body.details).toHaveLength(20);
+      expect(response.body.error).toBe('mappings[0].text_message_id must be a positive integer message ID.');
+    });
+
+    it('should return 400 for more than 50,000 mappings', async () => {
+      const mappings = Array.from({ length: 50001 }, (_, i) => ({ text_message_id: 1, media_message_id: i + 1 }));
+
+      const response = await put({ mappings }).expect(400);
+
+      expect(response.body.error).toBe('mappings must contain at most 50000 items.');
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+
+    it('should accept a 5,000-item body larger than the default 100 KB limit', async () => {
+      const mappings = Array.from({ length: 5000 }, (_, i) => ({
+        text_message_id: '55',
+        media_message_id: String(1000000000 + i),
+        source: 'manual',
+      }));
+      const body = { mappings };
+      expect(Buffer.byteLength(JSON.stringify(body))).toBeGreaterThan(100 * 1024);
+      mockDbService.getMappableMessageInfo.mockImplementation(async (_channelId, ids) =>
+        ids.map((id) => ({ message_id: id, is_audio: id !== '55', has_text: id === '55' }))
+      );
+
+      const response = await put(body).expect(200);
+
+      expect(response.body.count).toBe(5000);
+      expect(mockDbService.getMappableMessageInfo).toHaveBeenCalledTimes(1);
+    });
+
+    it('should keep the default 100 KB limit for unauthenticated requests', async () => {
+      const mappings = Array.from({ length: 5000 }, (_, i) => ({ text_message_id: '55', media_message_id: String(i + 1) }));
+
+      await request(app).put('/api/channels/123456789/mappings').send({ mappings }).expect(500);
+
+      expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /api/channels/:channelId/mappings', () => {
+    it('should return 401 Unauthorized without the auth cookie', async () => {
+      const response = await request(app).get('/api/channels/123456789/mappings').expect(401);
+
+      expect(response.body).toEqual({ success: false, error: 'Unauthorized' });
+    });
+
+    it('should return the stored mappings with the latest update time', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue({ channel_id: '123456789' } as any);
+      mockDbService.getChannelMappings.mockResolvedValue([
+        { text_message_id: '55', media_message_id: '67', source: 'manual', updated_at: new Date('2026-10-14T18:00:00.000Z') },
+        { text_message_id: '55', media_message_id: '68', source: 'auto', updated_at: new Date('2026-10-14T19:00:00.000Z') },
+      ]);
+
+      const response = await request(app)
+        .get('/api/channels/123456789/mappings')
+        .set('Cookie', authCookie)
+        .expect(200);
+
+      expect(response.body).toEqual({
+        success: true,
+        channel_id: '123456789',
+        updated_at: '2026-10-14T19:00:00.000Z',
+        mappings: [
+          { text_message_id: '55', media_message_id: '67', source: 'manual', updated_at: '2026-10-14T18:00:00.000Z' },
+          { text_message_id: '55', media_message_id: '68', source: 'auto', updated_at: '2026-10-14T19:00:00.000Z' },
+        ],
+      });
+      expect(mockDbService.getChannelMappings).toHaveBeenCalledWith('123456789');
+    });
+
+    it('should return an empty list with a null update time', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue({ channel_id: '123456789' } as any);
+      mockDbService.getChannelMappings.mockResolvedValue([]);
+
+      const response = await request(app)
+        .get('/api/channels/123456789/mappings')
+        .set('Cookie', authCookie)
+        .expect(200);
+
+      expect(response.body).toEqual({ success: true, channel_id: '123456789', updated_at: null, mappings: [] });
+    });
+
+    it('should return 404 for an unknown channel', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue(null);
+
+      const response = await request(app)
+        .get('/api/channels/999999/mappings')
+        .set('Cookie', authCookie)
+        .expect(404);
+
+      expect(response.body).toEqual({ success: false, error: 'Channel not found.' });
+      expect(mockDbService.getChannelMappings).not.toHaveBeenCalled();
     });
   });
 });
