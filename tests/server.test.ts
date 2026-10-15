@@ -972,4 +972,136 @@ describe('Express API Server Endpoints', () => {
       await request(app).post('/api/channels/123/batches').set('Cookie', authCookie).expect(500);
     });
   });
+
+  describe('PUT /api/channels/:channelId/batches/:batchNo/mappings', () => {
+    const path = '/api/channels/123/batches/2/mappings';
+    const storedBatch = { batch_no: 2, first_message_id: '41', last_message_id: '80', status: 'open' };
+    const updatedAt = new Date('2026-10-15T09:00:00.000Z');
+
+    beforeEach(() => {
+      mockDbService.getChannelProgress.mockResolvedValue({ channel_id: '123', channel_username: 'u' } as any);
+      mockDbService.getChannelBatch.mockResolvedValue(storedBatch as any);
+      mockDbService.getMappableMessageInfo.mockImplementation(async (_channelId, ids) =>
+        ids.map((id) => ({ message_id: id, is_audio: BigInt(id) >= BigInt(41), has_text: BigInt(id) < BigInt(41) }))
+      );
+      mockDbService.replaceBatchMappings.mockResolvedValue({ status: 'ok', count: 1, updated_at: updatedAt });
+    });
+
+    it('stores the batch mappings', async () => {
+      const response = await request(app)
+        .put(path)
+        .set('Cookie', authCookie)
+        .send({ mappings: [{ text_message_id: '5', media_message_id: '50', source: 'manual' }] })
+        .expect(200);
+
+      expect(response.body).toEqual({
+        success: true,
+        channel_id: '123',
+        batch_no: 2,
+        count: 1,
+        updated_at: updatedAt.toISOString(),
+      });
+      expect(mockDbService.getChannelBatch).toHaveBeenCalledWith('123', 2);
+      expect(mockDbService.replaceBatchMappings).toHaveBeenCalledWith('123', storedBatch, [
+        { text_message_id: '5', media_message_id: '50', source: 'manual' },
+      ]);
+    });
+
+    it('accepts a text outside the batch range', async () => {
+      // Text 5 is in an earlier batch, for example a series header.
+      await request(app)
+        .put(path)
+        .set('Cookie', authCookie)
+        .send({ mappings: [{ text_message_id: '5', media_message_id: '50' }] })
+        .expect(200);
+    });
+
+    it('rejects audio outside the batch range', async () => {
+      const response = await request(app)
+        .put(path)
+        .set('Cookie', authCookie)
+        .send({ mappings: [{ text_message_id: '5', media_message_id: '90' }] })
+        .expect(400);
+
+      expect(response.body.error).toBe('mappings[0].media_message_id is not in batch 2.');
+      expect(mockDbService.replaceBatchMappings).not.toHaveBeenCalled();
+    });
+
+    it('rejects a media message that is not audio', async () => {
+      mockDbService.getMappableMessageInfo.mockResolvedValue([
+        { message_id: '5', is_audio: false, has_text: true },
+        { message_id: '50', is_audio: false, has_text: false },
+      ]);
+
+      const response = await request(app)
+        .put(path)
+        .set('Cookie', authCookie)
+        .send({ mappings: [{ text_message_id: '5', media_message_id: '50' }] })
+        .expect(400);
+
+      expect(response.body.error).toBe('mappings[0].media_message_id is not an audio or voice message.');
+    });
+
+    it('returns 404 for a missing batch', async () => {
+      mockDbService.getChannelBatch.mockResolvedValue(null);
+
+      const response = await request(app).put(path).set('Cookie', authCookie).send({ mappings: [] }).expect(404);
+
+      expect(response.body).toEqual({ success: false, error: 'Batch not found.' });
+    });
+
+    it('returns 404 when the channel or batch is gone at write time', async () => {
+      mockDbService.replaceBatchMappings.mockResolvedValue({ status: 'not_found' });
+
+      const response = await request(app).put(path).set('Cookie', authCookie).send({ mappings: [] }).expect(404);
+
+      expect(response.body).toEqual({ success: false, error: 'Batch not found.' });
+    });
+
+    it('returns 409 when the batch range changed', async () => {
+      mockDbService.replaceBatchMappings.mockResolvedValue({ status: 'conflict' });
+
+      const response = await request(app).put(path).set('Cookie', authCookie).send({ mappings: [] }).expect(409);
+
+      expect(response.body).toEqual({ success: false, error: 'Batch changed while saving. Load it again.' });
+    });
+
+    it('returns 400 for an invalid batch number', async () => {
+      const response = await request(app)
+        .put('/api/channels/123/batches/0/mappings')
+        .set('Cookie', authCookie)
+        .send({ mappings: [] })
+        .expect(400);
+
+      expect(response.body).toEqual({ success: false, error: 'Invalid batch number.' });
+    });
+
+    it('returns 400 for invalid JSON', async () => {
+      const response = await request(app)
+        .put(path)
+        .set('Cookie', authCookie)
+        .set('Content-Type', 'application/json')
+        .send('{"mappings": [')
+        .expect(400);
+
+      expect(response.body).toEqual({ success: false, error: 'Request body is not valid JSON.' });
+    });
+
+    it('returns 404 for an untracked channel', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue(null);
+
+      await request(app).put(path).set('Cookie', authCookie).send({ mappings: [] }).expect(404);
+      expect(mockDbService.getChannelBatch).not.toHaveBeenCalled();
+    });
+
+    it('returns 401 when unauthenticated', async () => {
+      await request(app).put(path).send({ mappings: [] }).expect(401);
+    });
+
+    it('returns 500 when the write fails', async () => {
+      mockDbService.replaceBatchMappings.mockRejectedValue(new Error('deadlock'));
+
+      await request(app).put(path).set('Cookie', authCookie).send({ mappings: [] }).expect(500);
+    });
+  });
 });

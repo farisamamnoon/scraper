@@ -288,6 +288,28 @@ curl -b cookies.txt -X POST http://localhost:3000/api/channels/1234567890/batche
 
 `batch_count` is the number of all batches of the channel after the rebuild. `open_count` is 0 or 1.
 
+### `PUT /api/channels/:channelId/batches/:batchNo/mappings`
+
+Replaces the mappings whose audio is inside one batch. Mappings of other batches stay as they are, so two people can map different batches of one channel at the same time. The write also freezes the batch.
+
+```bash
+curl -b cookies.txt -X PUT -H 'Content-Type: application/json' \
+  -d '{"mappings":[{"text_message_id":"38","media_message_id":"41","source":"manual"}]}' \
+  http://localhost:3000/api/channels/1234567890/batches/2/mappings
+```
+
+The body and the item checks are the same as for `PUT /api/channels/:channelId/mappings`, plus one check: every `media_message_id` must be inside the batch range. The `text_message_id` can be any text message of the channel, for example a series header in an earlier batch. An empty array clears the mappings of the batch.
+
+| Status | Body |
+|---|---|
+| 200 | `{"success": true, "channel_id": "1234567890", "batch_no": 2, "count": 1, "updated_at": "<ISO>"}` |
+| 400 | `Invalid channel ID.`, `Invalid batch number.`, `Request body is not valid JSON.`, or a problem list such as `mappings[0].media_message_id is not in batch 2.` |
+| 404 | `Channel not found.` or `Batch not found.` |
+| 409 | `Batch changed while saving. Load it again.` A rebuild replaced the open batch after the request read it. Nothing is written |
+| 413 | `Request body exceeds the 5 MB limit.` |
+
+**Concurrent writes.** The write locks the channel row, as the full-set PUT does. It checks again that the batch has the range it validated against, and returns `409` if not. A full-set PUT and a batch PUT on the same channel still overwrite each other: the last write wins.
+
 ## Media
 
 ### `GET /api/media?key=<media_key>[&download=true]`

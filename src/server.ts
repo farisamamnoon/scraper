@@ -3,7 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { matchedData, param, query, validationResult } from 'express-validator';
 import { DbService } from './services/db.service';
-import type { ChannelProgress, ChannelStatus } from './services/db.service';
+import type { ChannelProgress, ChannelStatus, MappingInput } from './services/db.service';
 import { Importer } from './importer';
 import { TelegramService } from './services/telegram.service';
 import { S3Service } from './services/s3.service';
@@ -15,10 +15,12 @@ import {
   parseMappingsBody,
   parseTelegramId
 } from './mappings';
+import type { MappingProblem } from './mappings';
 import { planChannelTail } from './batching';
 
 const MAPPINGS_PATH = '/api/channels/:channelId/mappings';
 const BATCHES_PATH = '/api/channels/:channelId/batches';
+const BATCH_MAPPINGS_PATH = '/api/channels/:channelId/batches/:batchNo/mappings';
 
 export function createServer(
   dbService: DbService,
@@ -58,7 +60,7 @@ export function createServer(
   // larger limit; the global parser skips a body that is already parsed. Body errors get their
   // own statuses here, so the mapper UI can tell them apart from server errors.
   const mappingsJsonParser = express.json({ limit: MAPPINGS_BODY_LIMIT });
-  app.put(MAPPINGS_PATH, apiAuthMiddleware, (req: Request, res: Response, next: NextFunction) => {
+  app.put([MAPPINGS_PATH, BATCH_MAPPINGS_PATH], apiAuthMiddleware, (req: Request, res: Response, next: NextFunction) => {
     mappingsJsonParser(req, res, (err?: any) => {
       if (err?.type === 'entity.too.large') {
         res.status(413).json({ success: false, error: 'Request body exceeds the 5 MB limit.' });
@@ -454,6 +456,40 @@ export function createServer(
   };
 
   /**
+   * Adds a problem for each mapping whose audio is not a stored audio message or whose text is not a
+   * stored message with text. One set-based query for the whole set.
+   */
+  const checkStoredMessages = async (
+    channelId: string,
+    mappings: MappingInput[],
+    problems: MappingProblem[]
+  ): Promise<void> => {
+    if (mappings.length === 0) return;
+    const messageIds = new Set<string>();
+    mappings.forEach((mapping) => {
+      messageIds.add(mapping.text_message_id);
+      messageIds.add(mapping.media_message_id);
+    });
+    const messageInfo = await dbService.getMappableMessageInfo(channelId, [...messageIds]);
+    const messagesById = new Map(messageInfo.map((row) => [row.message_id, row]));
+
+    mappings.forEach((mapping, index) => {
+      const media = messagesById.get(mapping.media_message_id);
+      if (!media) {
+        problems.push({ index, field: 'media_message_id', reason: 'is not a stored message of this channel.' });
+      } else if (!media.is_audio) {
+        problems.push({ index, field: 'media_message_id', reason: 'is not an audio or voice message.' });
+      }
+      const text = messagesById.get(mapping.text_message_id);
+      if (!text) {
+        problems.push({ index, field: 'text_message_id', reason: 'is not a stored message of this channel.' });
+      } else if (!text.has_text) {
+        problems.push({ index, field: 'text_message_id', reason: 'has no text.' });
+      }
+    });
+  };
+
+  /**
    * PUT /api/channels/:channelId/mappings
    * Replaces the full set of text↔audio mappings for a channel. All-or-nothing: any invalid item rejects the request.
    */
@@ -470,31 +506,7 @@ export function createServer(
         // Hand-validated, not express-validator: the checks are all-or-nothing over up to
         // 50,000 items, report per-item details, and end in one set-based DB lookup.
         const { mappings, problems } = parseMappingsBody(req.body);
-
-        if (problems.length === 0 && mappings.length > 0) {
-          const messageIds = new Set<string>();
-          mappings.forEach((mapping) => {
-            messageIds.add(mapping.text_message_id);
-            messageIds.add(mapping.media_message_id);
-          });
-          const messageInfo = await dbService.getMappableMessageInfo(channelId, [...messageIds]);
-          const messagesById = new Map(messageInfo.map((row) => [row.message_id, row]));
-
-          mappings.forEach((mapping, index) => {
-            const media = messagesById.get(mapping.media_message_id);
-            if (!media) {
-              problems.push({ index, field: 'media_message_id', reason: 'is not a stored message of this channel.' });
-            } else if (!media.is_audio) {
-              problems.push({ index, field: 'media_message_id', reason: 'is not an audio or voice message.' });
-            }
-            const text = messagesById.get(mapping.text_message_id);
-            if (!text) {
-              problems.push({ index, field: 'text_message_id', reason: 'is not a stored message of this channel.' });
-            } else if (!text.has_text) {
-              problems.push({ index, field: 'text_message_id', reason: 'has no text.' });
-            }
-          });
-        }
+        if (problems.length === 0) await checkStoredMessages(channelId, mappings, problems);
 
         if (problems.length > 0) {
           res.status(400).json({
@@ -606,6 +618,81 @@ export function createServer(
         );
 
         res.json({ success: true, channel_id: channelId, ...result });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  /**
+   * PUT /api/channels/:channelId/batches/:batchNo/mappings
+   * Replaces the mappings whose audio is in one batch, and freezes the batch. The text can be in any batch.
+   * All-or-nothing, with the same item checks as PUT /api/channels/:channelId/mappings.
+   */
+  app.put(
+    BATCH_MAPPINGS_PATH,
+    apiAuthMiddleware,
+    [
+      channelIdParam,
+      param('batchNo').isInt({ min: 1, max: 2147483647 }).withMessage('Invalid batch number.').toInt(),
+      handleValidationErrors
+    ],
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const tracked = await findTrackedChannel(req, res);
+        if (!tracked) return;
+        const { channelId, channel } = tracked;
+        const { batchNo } = matchedData(req, { locations: ['params'] }) as { batchNo: number };
+
+        const batch = await dbService.getChannelBatch(channelId, batchNo);
+        if (!batch) {
+          res.status(404).json({ success: false, error: 'Batch not found.' });
+          return;
+        }
+
+        const { mappings, problems } = parseMappingsBody(req.body);
+        if (problems.length === 0) {
+          const first = BigInt(batch.first_message_id);
+          const last = BigInt(batch.last_message_id);
+          mappings.forEach((mapping, index) => {
+            const mediaId = BigInt(mapping.media_message_id);
+            if (mediaId < first || mediaId > last) {
+              problems.push({ index, field: 'media_message_id', reason: `is not in batch ${batchNo}.` });
+            }
+          });
+        }
+        if (problems.length === 0) await checkStoredMessages(channelId, mappings, problems);
+
+        if (problems.length > 0) {
+          res.status(400).json({
+            success: false,
+            error: describeMappingProblem(problems[0]),
+            details: problems.slice(0, MAX_MAPPING_PROBLEMS)
+          });
+          return;
+        }
+
+        // A rebuild can replace an open batch after the read above. The write checks the range again under a lock.
+        const result = await dbService.replaceBatchMappings(channelId, batch, mappings);
+        if (result.status === 'not_found') {
+          res.status(404).json({ success: false, error: 'Batch not found.' });
+          return;
+        }
+        if (result.status === 'conflict') {
+          res.status(409).json({ success: false, error: 'Batch changed while saving. Load it again.' });
+          return;
+        }
+        logger.info(
+          `REST API: Stored ${result.count} mappings for batch ${batchNo} of channel @${channel.channel_username || channelId}.`
+        );
+
+        res.json({
+          success: true,
+          channel_id: channelId,
+          batch_no: batchNo,
+          count: result.count,
+          updated_at: result.updated_at
+        });
       } catch (err) {
         next(err);
       }

@@ -99,6 +99,13 @@ export interface BatchRebuildResult {
   open_count: number;
 }
 
+export type BatchMappingsResult =
+  | { status: 'ok'; count: number; updated_at: Date }
+  /** The channel or the batch does not exist. */
+  | { status: 'not_found' }
+  /** The batch range changed since the caller read it. */
+  | { status: 'conflict' };
+
 export interface ChannelListOptions {
   status?: ChannelStatus;
   limit: number;
@@ -488,19 +495,7 @@ export class DbService {
         return null;
       }
       await client.query('DELETE FROM channel_mappings WHERE channel_id = $1', [channelId.toString()]);
-      if (mappings.length > 0) {
-        await client.query(
-          `INSERT INTO channel_mappings (channel_id, media_message_id, text_message_id, source)
-           SELECT $1::bigint, m.media_message_id, m.text_message_id, m.source
-           FROM unnest($2::bigint[], $3::bigint[], $4::text[]) AS m(media_message_id, text_message_id, source)`,
-          [
-            channelId.toString(),
-            mappings.map((m) => m.media_message_id),
-            mappings.map((m) => m.text_message_id),
-            mappings.map((m) => m.source)
-          ]
-        );
-      }
+      await this.insertMappings(client, channelId.toString(), mappings);
       const res = await client.query('SELECT NOW() AS updated_at');
       await client.query('COMMIT');
       return { count: mappings.length, updated_at: res.rows[0].updated_at };
@@ -511,6 +506,76 @@ export class DbService {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Replaces the mappings whose audio is inside one batch, and freezes that batch, in one transaction.
+   * `batch` is the range the caller validated against: a different stored range returns `conflict`,
+   * because a rebuild replaced the open batch in the meantime.
+   */
+  async replaceBatchMappings(
+    channelId: string | number | bigint,
+    batch: Pick<ChannelBatch, 'batch_no' | 'first_message_id' | 'last_message_id'>,
+    mappings: MappingInput[]
+  ): Promise<BatchMappingsResult> {
+    const id = channelId.toString();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query('SELECT channel_id FROM telegram_channels WHERE channel_id = $1 FOR UPDATE', [id]);
+      if (locked.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return { status: 'not_found' };
+      }
+      const stored = await client.query(
+        'SELECT first_message_id::TEXT, last_message_id::TEXT FROM channel_batches WHERE channel_id = $1 AND batch_no = $2',
+        [id, batch.batch_no]
+      );
+      if (stored.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return { status: 'not_found' };
+      }
+      const range = stored.rows[0];
+      if (range.first_message_id !== batch.first_message_id || range.last_message_id !== batch.last_message_id) {
+        await client.query('ROLLBACK');
+        return { status: 'conflict' };
+      }
+
+      await client.query(
+        'DELETE FROM channel_mappings WHERE channel_id = $1 AND media_message_id BETWEEN $2 AND $3',
+        [id, batch.first_message_id, batch.last_message_id]
+      );
+      await this.insertMappings(client, id, mappings);
+      await client.query(
+        "UPDATE channel_batches SET status = 'frozen', frozen_at = COALESCE(frozen_at, NOW()) WHERE channel_id = $1 AND batch_no = $2",
+        [id, batch.batch_no]
+      );
+      const res = await client.query('SELECT NOW() AS updated_at');
+      await client.query('COMMIT');
+      return { status: 'ok', count: mappings.length, updated_at: res.rows[0].updated_at };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error(`Failed to replace mappings of batch ${batch.batch_no} for channel ${id}`, error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Bulk-inserts mappings with one unnest insert. Runs inside the caller's transaction. */
+  private async insertMappings(client: PoolClient, channelId: string, mappings: MappingInput[]): Promise<void> {
+    if (mappings.length === 0) return;
+    await client.query(
+      `INSERT INTO channel_mappings (channel_id, media_message_id, text_message_id, source)
+       SELECT $1::bigint, m.media_message_id, m.text_message_id, m.source
+       FROM unnest($2::bigint[], $3::bigint[], $4::text[]) AS m(media_message_id, text_message_id, source)`,
+      [
+        channelId,
+        mappings.map((m) => m.media_message_id),
+        mappings.map((m) => m.text_message_id),
+        mappings.map((m) => m.source)
+      ]
+    );
   }
 
   /**

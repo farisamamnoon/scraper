@@ -264,6 +264,65 @@ describe('DbService', () => {
     });
   });
 
+  describe('replaceBatchMappings', () => {
+    const now = new Date('2026-10-15T09:00:00.000Z');
+    const lockSql = 'SELECT channel_id FROM telegram_channels WHERE channel_id = $1 FOR UPDATE';
+    const batchSql = 'SELECT first_message_id::TEXT, last_message_id::TEXT FROM channel_batches WHERE channel_id = $1 AND batch_no = $2';
+    const batch = { batch_no: 2, first_message_id: '41', last_message_id: '80' };
+    const mappings = [{ text_message_id: '5', media_message_id: '50', source: 'manual' as const }];
+
+    const batchQueries = (channel: boolean, range: object | null) => async (sql: string) => {
+      const s = sql.trim();
+      if (s === lockSql) return { rows: channel ? [{ channel_id: '123' }] : [] };
+      if (s === batchSql) return { rows: range ? [range] : [] };
+      if (s.startsWith('SELECT NOW()')) return { rows: [{ updated_at: now }] };
+      return { rows: [] };
+    };
+
+    it('replaces only the batch range and freezes the batch', async () => {
+      mockClient.query.mockImplementation(batchQueries(true, { first_message_id: '41', last_message_id: '80' }));
+
+      const result = await dbService.replaceBatchMappings('123', batch, mappings);
+
+      expect(result).toEqual({ status: 'ok', count: 1, updated_at: now });
+      const sql = clientSql();
+      expect(sql.slice(0, 4)).toEqual([
+        'BEGIN',
+        lockSql,
+        batchSql,
+        'DELETE FROM channel_mappings WHERE channel_id = $1 AND media_message_id BETWEEN $2 AND $3',
+      ]);
+      expect(mockClient.query.mock.calls[2][1]).toEqual(['123', 2]);
+      expect(mockClient.query.mock.calls[3][1]).toEqual(['123', '41', '80']);
+      expect(sql[4]).toContain('unnest($2::bigint[], $3::bigint[], $4::text[])');
+      expect(sql[5]).toBe(
+        "UPDATE channel_batches SET status = 'frozen', frozen_at = COALESCE(frozen_at, NOW()) WHERE channel_id = $1 AND batch_no = $2"
+      );
+      expect(sql[sql.length - 1]).toBe('COMMIT');
+      expect(mockClient.release).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns not_found for an untracked channel or a missing batch', async () => {
+      mockClient.query.mockImplementation(batchQueries(false, null));
+      await expect(dbService.replaceBatchMappings('123', batch, mappings)).resolves.toEqual({ status: 'not_found' });
+      expect(clientSql()).toEqual(['BEGIN', lockSql, 'ROLLBACK']);
+
+      mockClient.query.mockClear();
+      mockClient.query.mockImplementation(batchQueries(true, null));
+      await expect(dbService.replaceBatchMappings('123', batch, mappings)).resolves.toEqual({ status: 'not_found' });
+      expect(clientSql()).toEqual(['BEGIN', lockSql, batchSql, 'ROLLBACK']);
+    });
+
+    it('returns conflict when the batch range changed', async () => {
+      mockClient.query.mockImplementation(batchQueries(true, { first_message_id: '41', last_message_id: '90' }));
+
+      await expect(dbService.replaceBatchMappings('123', batch, mappings)).resolves.toEqual({ status: 'conflict' });
+
+      expect(clientSql()).toEqual(['BEGIN', lockSql, batchSql, 'ROLLBACK']);
+      expect(mockClient.release).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('getChannelBatches', () => {
     it('reads the stored order and the batches with their dates and mapped audio count', async () => {
       mockPool.query
