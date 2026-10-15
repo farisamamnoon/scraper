@@ -10,6 +10,8 @@ export interface Config {
     apiHash: string;
     session?: string;
     sessionFilePath?: string;
+    /** When true, boot skips the Telegram login and the importer (API-only server for testing). */
+    offline: boolean;
     proxy?: {
       host: string;
       port: number;
@@ -129,6 +131,7 @@ export function parseAndValidateConfig(): Config {
       apiHash: telegramApiHash,
       session: process.env.TELEGRAM_SESSION,
       sessionFilePath,
+      offline: process.env.TELEGRAM_OFFLINE === 'true',
       proxy
     },
     postgres: {

@@ -45,6 +45,7 @@ All configuration comes from environment variables (`.env` is loaded automatical
 | `TELEGRAM_SESSION_FILE_PATH` | | `./.session` | Where the session is read and saved |
 | `TELEGRAM_PROXY_HOST` / `_PORT` | | | SOCKS5 proxy for Telegram; the port is required when the host is set |
 | `TELEGRAM_PROXY_USERNAME` / `_PASSWORD` | | | |
+| `TELEGRAM_OFFLINE` | | | `true` skips the Telegram login and the importer: an API-only server for testing. Registering channels fails |
 | `POSTGRES_HOST`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | ✓ | | TLS with certificate verification is required |
 | `POSTGRES_PORT` | | `5432` | |
 | `S3_ENDPOINT` | ✓ | | Include the protocol, e.g. `https://<account>.r2.cloudflarestorage.com` |
