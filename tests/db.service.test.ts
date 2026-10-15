@@ -367,6 +367,19 @@ describe('DbService', () => {
       expect(listSql).toHaveLength(2);
       listSql.forEach((sql) => expect(sql).toContain('as mapping_count'));
     });
+
+    it('should include batch_count in getAllChannels and listChannels', async () => {
+      mockPool.query.mockResolvedValue({ rows: [{ total: 0 }] });
+
+      await dbService.getAllChannels();
+      await dbService.listChannels({ limit: 50, offset: 0 });
+
+      const listSql = mockPool.query.mock.calls.map(([sql]) => String(sql)).filter((sql) => sql.includes('message_count'));
+      expect(listSql).toHaveLength(2);
+      listSql.forEach((sql) =>
+        expect(sql).toContain('(SELECT COUNT(*) FROM channel_batches cb WHERE cb.channel_id = c.channel_id)::INTEGER as batch_count')
+      );
+    });
   });
 
   describe('getMappableMessageInfo', () => {

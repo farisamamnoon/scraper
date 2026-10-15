@@ -41,11 +41,12 @@ Returned by the list and progress endpoints. IDs are strings because they are Bi
   "last_processed_message_id": "4567",
   "status": "running",
   "message_count": 4210,
-  "mapping_count": 312
+  "mapping_count": 312,
+  "batch_count": 0
 }
 ```
 
-`status` is one of `pending`, `running`, `completed`, `failed`. `mapping_count` is the number of stored text↔audio mappings (see [Mappings](#mappings)).
+`status` is one of `pending`, `running`, `completed`, `failed`. `mapping_count` is the number of stored text↔audio mappings (see [Mappings](#mappings)). `batch_count` is the number of stored batches (see [Batches](#batches)). It is `0` until the first rebuild.
 
 ### `GET /api/progress`
 
