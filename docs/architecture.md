@@ -89,6 +89,7 @@ All tables are created by `DbService.initializeSchema()`.
 | `last_processed_message_id` | `BIGINT` | Resume checkpoint, written after each batch |
 | `import_started_at` | `TIMESTAMP` | Set the first time a channel becomes `running` |
 | `import_completed_at` | `TIMESTAMP` | Set on `completed` |
+| `batch_order` | `TEXT` | `audio_first` or `text_first`, learned by the batch rebuild. `NULL` until the first rebuild |
 
 A `failed` channel stays failed until something sets it back to `pending`. There is no API or UI for that yet, so it's a manual SQL `UPDATE`.
 
@@ -116,7 +117,22 @@ Text↔audio pairs written by the mapper UI through `PUT /api/channels/:channelI
 
 A PUT replaces the channel's whole set in one transaction: it locks the channel row with `SELECT … FOR UPDATE`, then runs `DELETE` plus one bulk `INSERT … SELECT FROM unnest(…)`. The lock makes overlapping PUTs for one channel run one after the other, so the last write wins instead of failing on the primary key. The IDs refer to `telegram_messages.message_id` of the same channel. The API checks that at write time.
 
-There are no foreign keys between the tables. `deleteChannel` removes the channel, its messages and its mappings in one transaction. It takes the same channel row lock first, so a PUT that overlaps a delete either commits before it (and the delete removes its rows) or finds no channel and returns `404`. Neither order leaves mapping rows without a channel.
+### `channel_batches`
+
+Stable ranges of consecutive messages that the mapper shows one at a time. [batching.md](batching.md) explains the rules.
+
+| Column | Type | Notes |
+|---|---|---|
+| `channel_id`, `batch_no` | `BIGINT`, `INTEGER` | `PRIMARY KEY`. `batch_no` counts from 1 in message order |
+| `first_message_id`, `last_message_id` | `BIGINT` | Inclusive range of `telegram_messages.message_id` |
+| `message_count` | `INTEGER` | Weighted size: audio messages plus non-audio messages with text |
+| `audio_count` | `INTEGER` | All audio messages in the range |
+| `status` | `TEXT` | `CHECK` in `open`, `frozen`. Only the last batch can be `open` |
+| `created_at`, `frozen_at` | `TIMESTAMPTZ` | `frozen_at` is `NULL` while the batch is open |
+
+`DbService.rebuildOpenBatches` writes this table in one transaction under the channel row lock. It freezes open batches that have a mapped audio, plans the messages after the last frozen batch, and replaces the open batches. Frozen batches never change.
+
+There are no foreign keys between the tables. `deleteChannel` removes the channel, its messages, its mappings and its batches in one transaction. It takes the same channel row lock first, so a PUT that overlaps a delete either commits before it (and the delete removes its rows) or finds no channel and returns `404`. Neither order leaves mapping rows without a channel.
 
 ### `telegram_json` shape
 

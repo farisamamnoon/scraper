@@ -48,6 +48,7 @@ Later stages read these parts of the scraper, so treat each one as a contract. I
 - **`telegram_json` shape**: the mapper reads `text`, `date` and `media` (`media_type`, `mime_type`). A message counts as audio when `media_type` is `audio` or `voice`, or `mime_type` starts with `audio/`. `PUT …/mappings` validates with the same rule.
 - **Media key layout**: `telegram/<channel_id>/<message_id>/<filename>`. The mapper's media route rejects any other key.
 - **Mappings**: one row per audio message in `channel_mappings`, keyed by `(channel_id, media_message_id)`. One text can describe several audio messages.
+- **Batches**: `channel_batches` splits each channel into message ranges for the mapper (see [batching.md](batching.md)). A `frozen` batch keeps its `batch_no` and range for as long as the channel exists, so a client can track progress per batch. Only the last batch can be `open`, and a rebuild can replace it.
 - **IDs**: channel and message IDs are BigInt values, and the API sends them as JSON strings.
 - **HTTP API**: the request and response shapes in [api.md](api.md), including the `{ success, … }` envelope and the error codes.
 
