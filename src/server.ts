@@ -505,13 +505,18 @@ export function createServer(
     .withMessage('Invalid channel ID.');
 
   /**
-   * Resolves a validated :channelId to a tracked channel. Sends 404 and returns null when it is not tracked.
+   * Resolves :channelId to a tracked channel. Sends 400 or 404 and returns null when it is invalid or not tracked.
    */
   const findTrackedChannel = async (
     req: Request,
     res: Response
   ): Promise<{ channelId: string; channel: ChannelProgress } | null> => {
-    const channelId = parseTelegramId(req.params.channelId) as string;
+    // channelIdParam already rejects bad IDs; this check keeps the type narrow without a cast.
+    const channelId = parseTelegramId(req.params.channelId);
+    if (!channelId) {
+      res.status(400).json({ success: false, error: 'Invalid channel ID.' });
+      return null;
+    }
     const channel = await dbService.getChannelProgress(channelId);
     if (!channel) {
       res.status(404).json({ success: false, error: 'Channel not found.' });
