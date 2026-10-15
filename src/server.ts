@@ -15,8 +15,10 @@ import {
   parseMappingsBody,
   parseTelegramId
 } from './mappings';
+import { planChannelTail } from './batching';
 
 const MAPPINGS_PATH = '/api/channels/:channelId/mappings';
+const BATCHES_PATH = '/api/channels/:channelId/batches';
 
 export function createServer(
   dbService: DbService,
@@ -546,6 +548,64 @@ export function createServer(
           updated_at: mappings.length > 0 ? new Date(latestMs) : null,
           mappings
         });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  /**
+   * GET /api/channels/:channelId/batches
+   * Returns the stored batches of a channel, ordered by batch number, and the learned channel order.
+   */
+  app.get(
+    BATCHES_PATH,
+    apiAuthMiddleware,
+    [channelIdParam, handleValidationErrors],
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const tracked = await findTrackedChannel(req, res);
+        if (!tracked) return;
+        const { channelId } = tracked;
+
+        const { order, batches } = await dbService.getChannelBatches(channelId);
+        res.json({ success: true, channel_id: channelId, order, batches });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  /**
+   * POST /api/channels/:channelId/batches
+   * Rebuilds the open end of a completed channel's batches. Frozen batches never change.
+   */
+  app.post(
+    BATCHES_PATH,
+    apiAuthMiddleware,
+    [channelIdParam, handleValidationErrors],
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const tracked = await findTrackedChannel(req, res);
+        if (!tracked) return;
+        const { channelId, channel } = tracked;
+
+        // Before completion the last stored message only looks final; more messages follow it.
+        if (channel.status !== 'completed') {
+          res.status(409).json({ success: false, error: 'Batches are built after the import completes.' });
+          return;
+        }
+
+        const result = await dbService.rebuildOpenBatches(channelId, planChannelTail);
+        if (!result) {
+          res.status(404).json({ success: false, error: 'Channel not found.' });
+          return;
+        }
+        logger.info(
+          `REST API: Rebuilt batches for channel @${channel.channel_username || channelId}: ${result.batch_count} batches, ${result.open_count} open.`
+        );
+
+        res.json({ success: true, channel_id: channelId, ...result });
       } catch (err) {
         next(err);
       }

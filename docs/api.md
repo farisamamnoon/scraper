@@ -226,6 +226,68 @@ The top-level `updated_at` is the latest row time, or `null` when the channel ha
 | 400 | `Invalid channel ID.` |
 | 404 | `Channel not found.` |
 
+## Batches
+
+A batch is a stable range of consecutive messages that the mapper shows at one time. [batching.md](batching.md) explains how the scraper cuts a channel into batches and when a batch is frozen.
+
+### Batch object
+
+```json
+{
+  "batch_no": 2,
+  "first_message_id": "41",
+  "last_message_id": "80",
+  "message_count": 24,
+  "audio_count": 12,
+  "mapped_audio_count": 3,
+  "status": "frozen",
+  "first_date": "2021-03-04T10:00:00.000Z",
+  "last_date": "2021-03-05T08:12:00.000Z",
+  "frozen_at": "2026-10-15T09:00:00.000Z"
+}
+```
+
+- `first_message_id` and `last_message_id` are inclusive. Every message of the channel in that ID range belongs to the batch.
+- `message_count` counts only the messages that a person maps or checks: audio messages, and non-audio messages with text.
+- `mapped_audio_count` is the number of stored mappings whose audio is in the range.
+- `status` is `frozen` (the range never changes) or `open` (only the last batch; the next rebuild can replace it).
+- `first_date` and `last_date` have the time zone offset of known issue 15 in [status.md](status.md).
+
+### `GET /api/channels/:channelId/batches`
+
+```bash
+curl -b cookies.txt http://localhost:3000/api/channels/1234567890/batches
+```
+
+```json
+{ "success": true, "channel_id": "1234567890", "order": "audio_first", "batches": [ /* batch objects, by batch_no */ ] }
+```
+
+`order` is the learned channel order, `audio_first` or `text_first`. It is `null` before the first rebuild. A channel with no batches returns an empty list.
+
+| Status | Body |
+|---|---|
+| 200 | as above |
+| 400 | `Invalid channel ID.` |
+| 404 | `Channel not found.` |
+
+### `POST /api/channels/:channelId/batches`
+
+Rebuilds the open end of the channel's batches. The importer also runs this when an import completes. Use this route for channels that completed before batching existed. Frozen batches never change, so you can call it at any time.
+
+```bash
+curl -b cookies.txt -X POST http://localhost:3000/api/channels/1234567890/batches
+```
+
+| Status | Body |
+|---|---|
+| 200 | `{"success": true, "channel_id": "1234567890", "order": "audio_first", "batch_count": 140, "open_count": 0}` |
+| 400 | `Invalid channel ID.` |
+| 404 | `Channel not found.` |
+| 409 | `Batches are built after the import completes.` The channel status is not `completed` |
+
+`batch_count` is the number of all batches of the channel after the rebuild. `open_count` is 0 or 1.
+
 ## Media
 
 ### `GET /api/media?key=<media_key>[&download=true]`

@@ -5,6 +5,7 @@ import { DbService } from '../src/services/db.service';
 import { Importer } from '../src/importer';
 import { TelegramService } from '../src/services/telegram.service';
 import { S3Service } from '../src/services/s3.service';
+import { planChannelTail } from '../src/batching';
 
 const testPassword = 'testpassword';
 const testToken = crypto.createHash('sha256').update(testPassword).digest('hex');
@@ -30,6 +31,10 @@ describe('Express API Server Endpoints', () => {
       getMappableMessageInfo: jest.fn(),
       replaceChannelMappings: jest.fn(),
       getChannelMappings: jest.fn(),
+      getChannelBatches: jest.fn(),
+      getChannelBatch: jest.fn(),
+      rebuildOpenBatches: jest.fn(),
+      replaceBatchMappings: jest.fn(),
     } as unknown as jest.Mocked<DbService>;
 
     mockImporter = {
@@ -853,6 +858,118 @@ describe('Express API Server Endpoints', () => {
         .expect(500);
 
       expect(response.body).toEqual({ success: false, error: 'An internal server error occurred.' });
+    });
+  });
+
+  describe('GET /api/channels/:channelId/batches', () => {
+    const batch = (batchNo: number, first: string, last: string, status: string) => ({
+      batch_no: batchNo,
+      first_message_id: first,
+      last_message_id: last,
+      message_count: 20,
+      audio_count: 10,
+      mapped_audio_count: 0,
+      status,
+      first_date: new Date('2024-01-01T00:00:00.000Z'),
+      last_date: new Date('2024-01-01T01:00:00.000Z'),
+      frozen_at: null,
+    });
+
+    it('returns the batches and order', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue({ channel_id: '123' } as any);
+      mockDbService.getChannelBatches.mockResolvedValue({
+        order: 'audio_first',
+        batches: [batch(1, '1', '40', 'frozen'), batch(2, '41', '80', 'open')] as any,
+      });
+
+      const response = await request(app).get('/api/channels/123/batches').set('Cookie', authCookie).expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.channel_id).toBe('123');
+      expect(response.body.order).toBe('audio_first');
+      expect(response.body.batches).toHaveLength(2);
+      expect(response.body.batches[1]).toMatchObject({ batch_no: 2, first_message_id: '41', status: 'open' });
+      expect(mockDbService.getChannelBatches).toHaveBeenCalledWith('123');
+    });
+
+    it('returns 401 when unauthenticated', async () => {
+      await request(app).get('/api/channels/123/batches').expect(401);
+    });
+
+    it('returns 400 for an invalid channel ID', async () => {
+      const response = await request(app).get('/api/channels/abc/batches').set('Cookie', authCookie).expect(400);
+
+      expect(response.body).toEqual({ success: false, error: 'Invalid channel ID.' });
+    });
+
+    it('returns 404 for an untracked channel', async () => {
+      const response = await request(app).get('/api/channels/123/batches').set('Cookie', authCookie).expect(404);
+
+      expect(response.body).toEqual({ success: false, error: 'Channel not found.' });
+      expect(mockDbService.getChannelBatches).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 when the query fails', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue({ channel_id: '123' } as any);
+      mockDbService.getChannelBatches.mockRejectedValue(new Error('connection lost'));
+
+      await request(app).get('/api/channels/123/batches').set('Cookie', authCookie).expect(500);
+    });
+  });
+
+  describe('POST /api/channels/:channelId/batches', () => {
+    it('rebuilds a completed channel', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue({ channel_id: '123', status: 'completed' } as any);
+      mockDbService.rebuildOpenBatches.mockResolvedValue({ order: 'text_first', batch_count: 9, open_count: 1 });
+
+      const response = await request(app).post('/api/channels/123/batches').set('Cookie', authCookie).expect(200);
+
+      expect(response.body).toEqual({
+        success: true,
+        channel_id: '123',
+        order: 'text_first',
+        batch_count: 9,
+        open_count: 1,
+      });
+      expect(mockDbService.rebuildOpenBatches).toHaveBeenCalledWith('123', planChannelTail);
+    });
+
+    it('returns 409 when the channel is not completed', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue({ channel_id: '123', status: 'running' } as any);
+
+      const response = await request(app).post('/api/channels/123/batches').set('Cookie', authCookie).expect(409);
+
+      expect(response.body).toEqual({ success: false, error: 'Batches are built after the import completes.' });
+      expect(mockDbService.rebuildOpenBatches).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the channel is deleted during the rebuild', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue({ channel_id: '123', status: 'completed' } as any);
+      mockDbService.rebuildOpenBatches.mockResolvedValue(null);
+
+      const response = await request(app).post('/api/channels/123/batches').set('Cookie', authCookie).expect(404);
+
+      expect(response.body).toEqual({ success: false, error: 'Channel not found.' });
+    });
+
+    it('returns 401 when unauthenticated', async () => {
+      await request(app).post('/api/channels/123/batches').expect(401);
+    });
+
+    it('returns 400 for an invalid channel ID', async () => {
+      await request(app).post('/api/channels/abc/batches').set('Cookie', authCookie).expect(400);
+    });
+
+    it('returns 404 for an untracked channel', async () => {
+      await request(app).post('/api/channels/123/batches').set('Cookie', authCookie).expect(404);
+      expect(mockDbService.rebuildOpenBatches).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 when the rebuild fails', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue({ channel_id: '123', status: 'completed' } as any);
+      mockDbService.rebuildOpenBatches.mockRejectedValue(new Error('deadlock'));
+
+      await request(app).post('/api/channels/123/batches').set('Cookie', authCookie).expect(500);
     });
   });
 });
