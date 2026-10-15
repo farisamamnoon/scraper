@@ -149,6 +149,9 @@ describe('DbService', () => {
       expect(sql).toContain('message_id = ANY($2::bigint[])');
       expect(sql).toContain("telegram_json->'media'->>'media_type' IN ('audio', 'voice')");
       expect(sql).toContain("telegram_json->'media'->>'mime_type' LIKE 'audio/%'");
+      // Whitespace-only text is not text: the regex needs one non-whitespace character.
+      expect(sql).toContain("COALESCE(telegram_json->>'text', '') ~ '\\S' AS has_text");
+      expect(sql).not.toContain("<> '' AS has_text");
       expect(params).toEqual(['123456789', ['55', '67', '68']]);
     });
   });

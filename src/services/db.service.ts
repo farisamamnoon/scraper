@@ -370,6 +370,7 @@ export class DbService {
 
   /**
    * Classifies stored messages by ID in one query: audio (voice/audio media) and non-empty text.
+   * Text counts only when it has a non-whitespace character, the same as a non-empty trimmed string.
    * IDs that are not stored for the channel are absent from the result.
    */
   async getMappableMessageInfo(
@@ -384,7 +385,7 @@ export class DbService {
             OR telegram_json->'media'->>'mime_type' LIKE 'audio/%',
           FALSE
         ) AS is_audio,
-        COALESCE(telegram_json->>'text', '') <> '' AS has_text
+        COALESCE(telegram_json->>'text', '') ~ '\\S' AS has_text
       FROM telegram_messages
       WHERE channel_id = $1 AND message_id = ANY($2::bigint[]);
     `;

@@ -176,7 +176,7 @@ Each item takes `text_message_id` and `media_message_id` as digit strings or int
 3. Each ID is a positive integer that fits in `BIGINT`, and `source` is one of the three values.
 4. No `media_message_id` occurs twice.
 5. Every `media_message_id` is a stored message of this channel and is audio: `telegram_json.media.media_type` is `audio` or `voice`, or `telegram_json.media.mime_type` starts with `audio/`.
-6. Every `text_message_id` is a stored message of this channel with a non-empty `telegram_json.text`.
+6. Every `text_message_id` is a stored message of this channel with a non-empty `telegram_json.text` after trimming. Text that is only whitespace counts as no text.
 
 Checks 5 and 6 run only when checks 1–4 pass, and use one database query for the whole set.
 
