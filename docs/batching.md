@@ -71,7 +71,15 @@ Merge a small batch with the neighbor across the shorter gap, if the result is n
 | 10 / 50 | 3,205 | 16 / 27 / 50 | 0 of 6,725 |
 | 15 / 40 | 2,244 | 25 / 36 / 40 | 0 of 6,725 |
 
-The 824-message burst becomes 25 batches of 18 to 46. No mapping data existed when this was tested, so "pairs cut" counts an uncaptioned audio and the text next to it on the channel-order side. Test again against real mappings when the mapper has produced them.
+The 824-message burst becomes 25 batches of 18 to 46. No mapping data existed when this was tested, so "pairs cut" counts an uncaptioned audio and the text next to it on the channel-order side, within 1 hour. Test again against real mappings when the mapper has produced them.
+
+**Check of the built feature (2026-10-15).** `rebuildOpenBatches` ran on a copy of the same database, with `MIN_BATCH = 10` and `MAX_BATCH = 50`:
+
+- 4,049 batches. Size p10 / p50 / p90 / max is 10 / 16 / 27 / 50. There are more batches than in the table above, because a photo or video with a caption now counts as text, the same rule the mapping check uses.
+- Every message is in exactly one batch. A second rebuild changed no batch.
+- No adjacent audio and text within 30 minutes are in different batches. 55 of 7,186 adjacent pairs are in different batches, and all of them are more than 1.7 hours apart, so the session rule separates them by design.
+- A few batches are smaller than `MIN_BATCH` (the smallest has 3). This happens when a merge would make a batch larger than `MAX_BATCH`.
+- A rebuild of all 92 channels takes about 10 seconds.
 
 ## Stable batches
 
