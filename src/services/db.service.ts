@@ -15,6 +15,33 @@ export interface ChannelProgress {
 
 export interface ChannelProgressWithCount extends ChannelProgress {
   message_count: number;
+  mapping_count: number;
+}
+
+/**
+ * Allowed mapping sources: the one list for the type, the API check and the SQL CHECK.
+ * The CHECK applies only when the table is created, so a change here also needs a constraint change on existing databases.
+ */
+export const MAPPING_SOURCES = ['manual', 'auto', 'unknown'] as const;
+export type MappingSource = (typeof MAPPING_SOURCES)[number];
+
+/** A text↔audio pair as sent by a client. IDs are canonical digit strings (BigInt-safe). */
+export interface MappingInput {
+  text_message_id: string;
+  media_message_id: string;
+  source: MappingSource;
+}
+
+/** A stored text↔audio pair. IDs are strings because they are BigInt values. */
+export interface ChannelMapping extends MappingInput {
+  updated_at: Date;
+}
+
+/** What a stored message qualifies as when used in a mapping. */
+export interface MappableMessageInfo {
+  message_id: string;
+  is_audio: boolean;
+  has_text: boolean;
 }
 
 export interface ChannelListOptions {
@@ -72,6 +99,23 @@ export class DbService {
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_telegram_messages_channel_id_message_id 
         ON telegram_messages (channel_id, message_id);
+      `);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS channel_mappings (
+            channel_id BIGINT NOT NULL,
+            media_message_id BIGINT NOT NULL,
+            text_message_id BIGINT NOT NULL,
+            source TEXT NOT NULL CHECK (source IN (${MAPPING_SOURCES.map((s) => `'${s}'`).join(', ')})),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (channel_id, media_message_id)
+        );
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_channel_mappings_channel_id_text_message_id
+        ON channel_mappings (channel_id, text_message_id);
       `);
 
       await client.query('COMMIT');
@@ -240,7 +284,8 @@ export class DbService {
         c.import_completed_at, 
         c.last_processed_message_id::TEXT, 
         c.status,
-        COALESCE(COUNT(m.id), 0)::INTEGER as message_count
+        COALESCE(COUNT(m.id), 0)::INTEGER as message_count,
+        (SELECT COUNT(*) FROM channel_mappings cm WHERE cm.channel_id = c.channel_id)::INTEGER as mapping_count
       FROM telegram_channels c
       LEFT JOIN telegram_messages m ON c.channel_id = m.channel_id
       GROUP BY c.channel_id, c.channel_username, c.title, c.import_started_at, c.import_completed_at, c.last_processed_message_id, c.status
@@ -283,7 +328,8 @@ export class DbService {
         c.import_completed_at,
         c.last_processed_message_id::TEXT,
         c.status,
-        COALESCE(COUNT(m.id), 0)::INTEGER as message_count
+        COALESCE(COUNT(m.id), 0)::INTEGER as message_count,
+        (SELECT COUNT(*) FROM channel_mappings cm WHERE cm.channel_id = c.channel_id)::INTEGER as mapping_count
       FROM telegram_channels c
       LEFT JOIN telegram_messages m ON c.channel_id = m.channel_id
       ${whereSql}
@@ -328,16 +374,108 @@ export class DbService {
   }
 
   /**
-   * Deletes a channel and all its stored messages in a transaction.
+   * Classifies stored messages by ID in one query: audio (voice/audio media) and non-empty text.
+   * Text counts only when it has a non-whitespace character, the same as a non-empty trimmed string.
+   * IDs that are not stored for the channel are absent from the result.
+   */
+  async getMappableMessageInfo(
+    channelId: string | number | bigint,
+    messageIds: string[]
+  ): Promise<MappableMessageInfo[]> {
+    const query = `
+      SELECT
+        message_id::TEXT,
+        COALESCE(
+          telegram_json->'media'->>'media_type' IN ('audio', 'voice')
+            OR telegram_json->'media'->>'mime_type' LIKE 'audio/%',
+          FALSE
+        ) AS is_audio,
+        COALESCE(telegram_json->>'text', '') ~ '\\S' AS has_text
+      FROM telegram_messages
+      WHERE channel_id = $1 AND message_id = ANY($2::bigint[]);
+    `;
+    const res = await this.pool.query(query, [channelId.toString(), messageIds]);
+    return res.rows;
+  }
+
+  /**
+   * Replaces the whole mapping set of a channel in one transaction. Returns the stored count and write time,
+   * or null when the channel is not tracked.
+   * Locks the channel row first, so overlapping replaces run one after the other (the last write wins)
+   * and a replace cannot write mappings for a channel that deleteChannel removes.
+   */
+  async replaceChannelMappings(
+    channelId: string | number | bigint,
+    mappings: MappingInput[]
+  ): Promise<{ count: number; updated_at: Date } | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query(
+        'SELECT channel_id FROM telegram_channels WHERE channel_id = $1 FOR UPDATE',
+        [channelId.toString()]
+      );
+      if (locked.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return null;
+      }
+      await client.query('DELETE FROM channel_mappings WHERE channel_id = $1', [channelId.toString()]);
+      if (mappings.length > 0) {
+        await client.query(
+          `INSERT INTO channel_mappings (channel_id, media_message_id, text_message_id, source)
+           SELECT $1::bigint, m.media_message_id, m.text_message_id, m.source
+           FROM unnest($2::bigint[], $3::bigint[], $4::text[]) AS m(media_message_id, text_message_id, source)`,
+          [
+            channelId.toString(),
+            mappings.map((m) => m.media_message_id),
+            mappings.map((m) => m.text_message_id),
+            mappings.map((m) => m.source)
+          ]
+        );
+      }
+      const res = await client.query('SELECT NOW() AS updated_at');
+      await client.query('COMMIT');
+      return { count: mappings.length, updated_at: res.rows[0].updated_at };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error(`Failed to replace mappings for channel ${channelId}`, error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Retrieves the stored text↔audio mappings of a channel, ordered by audio message ID.
+   */
+  async getChannelMappings(channelId: string | number | bigint): Promise<ChannelMapping[]> {
+    const query = `
+      SELECT text_message_id::TEXT, media_message_id::TEXT, source, updated_at
+      FROM channel_mappings
+      WHERE channel_id = $1
+      ORDER BY media_message_id ASC;
+    `;
+    const res = await this.pool.query(query, [channelId.toString()]);
+    return res.rows;
+  }
+
+  /**
+   * Deletes a channel and all its stored messages and mappings in a transaction.
+   * Takes the same channel row lock as replaceChannelMappings first, so an overlapping replace
+   * either finishes before the delete (and its rows are deleted) or finds no channel.
    */
   async deleteChannel(channelId: string | number | bigint): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT channel_id FROM telegram_channels WHERE channel_id = $1 FOR UPDATE', [
+        channelId.toString()
+      ]);
+      await client.query('DELETE FROM channel_mappings WHERE channel_id = $1', [channelId.toString()]);
       await client.query('DELETE FROM telegram_messages WHERE channel_id = $1', [channelId.toString()]);
       await client.query('DELETE FROM telegram_channels WHERE channel_id = $1', [channelId.toString()]);
       await client.query('COMMIT');
-      logger.info(`Deleted channel ${channelId} and its messages from database.`);
+      logger.info(`Deleted channel ${channelId}, its messages and mappings from database.`);
     } catch (error) {
       await client.query('ROLLBACK');
       logger.error(`Failed to delete channel ${channelId} from database`, error);

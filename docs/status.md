@@ -39,16 +39,25 @@ Ordered roughly by impact. None are fixed at this checkpoint.
 9. **Shutdown doesn't wait for running imports.** The reset on boot makes this safe, but logs can end mid-batch.
 10. **The auth token is just `sha256(password)`.** It's static, unsalted, and compared without a timing-safe check. That's fine for an internal tool, but it isn't per-user.
 11. **The deploy workflow pulls `main`, not `deploy`** (see [deployment.md](deployment.md#how-production-deploys)).
+12. **Mappings: the last write wins, with no history.** `PUT /api/channels/:id/mappings` replaces the whole set. Two editors on the same channel overwrite each other, and there is no history and no undo.
+13. **Mappings are checked only at write time.** A later re-import can change a message (for example, an edit that removes its text). The stored mapping stays, and only the next PUT checks it again.
+14. **Body-parser errors return `500` on most routes.** The global error handler maps every error to 500, so a body over the size limit or malformed JSON reaches the client as `500 An internal server error occurred.` Only `PUT /api/channels/:id/mappings` returns `413` and `400` for these.
+15. **`TIMESTAMP` columns are read as Node's local time.** `telegram_channels` and `telegram_messages` use `TIMESTAMP` without a time zone. node-pg parses those values as local time, so API times are off by the server's UTC offset when the Node process does not run in UTC. `channel_mappings` uses `TIMESTAMPTZ` and is not affected.
 
 ## Open questions
 
 These need a decision, not just code.
 
-- **Integration with the mapper UI.** `../telegram-pipeline-ui` (last commit 2026-02-25) was built against an n8n backend: `POST` to an n8n webhook to queue, `GET /channel` and `GET /channel/:id/message` to read, and HLS (`s3_hls_url`) for audio. This service exposes `/api/channels…` and raw S3 objects with no HLS transcoding. Either the UI adapts to this API, an adapter layer is added here, or n8n keeps a role. Which one?
+- **Stage 3 owner and storage.** Who builds the large language model (LLM) text processing? Does it store its results here, behind new endpoints, or in its own service?
+- **Stage 4 input.** The delivery service writes to the destination database. Does it read validated records from this API, from this database, or from wherever Stage 3 stores them?
+- **Stage 4 review grid.** The product spec puts the validation grid in the mapper UI. Does it stay there, next to the delivery service it feeds?
 - **Processing chunks.** Is grouping messages by time window (PR #10) still wanted for stage 2 or 3? If so, why was it reverted?
 - **The production server's checkout.** Which branch is `/home/scraper-user/scraper` on? Should the workflow pull `deploy` instead of `main`?
 - **Live following.** Should completed channels be re-polled on a schedule, or is this purely a one-off history importer?
 
 ## Changelog
 
+- **2026-10-15**: Mappings review fixes. `replaceChannelMappings` locks the channel row before the replace, so two overlapping PUTs no longer fail with `500` on the primary key; the last write wins. `deleteChannel` takes the same lock first, so a PUT that overlaps a delete can no longer leave mapping rows without a channel. A text message that holds only whitespace no longer passes the "has text" check.
+- **2026-10-15**: Pipeline context documented in [pipeline.md](pipeline.md): the four stages, their owners, and the data contracts other stages rely on. Stage 4 delivery is a separate service. The mapper UI integration question is answered: the UI adapts to this API through its own server-side routes. n8n has no role. Three pipeline questions added.
+- **2026-10-15**: Mapper integration, gap 1. New `channel_mappings` table, plus `PUT` and `GET /api/channels/:channelId/mappings` to store and read text↔audio pairs. `DELETE /api/channels/:channelId` now also deletes the channel's mappings. Known issues 12–15 added. Channel objects from `GET /api/progress` and `GET /api/channels` now include `mapping_count`.
 - **2026-10-04**: Documentation revamp for Claude Code. `AGENTS.md` and `.agents/rules/` were replaced by `CLAUDE.md` and path-scoped `.claude/rules/`, `README.md` was rewritten, and `docs/` was added. No code changes.

@@ -40,11 +40,12 @@ Returned by the list and progress endpoints. IDs are strings because they are Bi
   "import_completed_at": null,
   "last_processed_message_id": "4567",
   "status": "running",
-  "message_count": 4210
+  "message_count": 4210,
+  "mapping_count": 312
 }
 ```
 
-`status` is one of `pending`, `running`, `completed`, `failed`.
+`status` is one of `pending`, `running`, `completed`, `failed`. `mapping_count` is the number of stored text↔audio mappings (see [Mappings](#mappings)).
 
 ### `GET /api/progress`
 
@@ -133,12 +134,96 @@ Every stored message for the channel, newest first. **Not paginated**: a large c
 
 ### `DELETE /api/channels/:channelId`
 
-Deletes the channel row and all its message rows in one transaction. **S3 objects are not deleted.**
+Deletes the channel row, all its message rows and all its mappings in one transaction. **S3 objects are not deleted.**
 
 | Status | Body |
 |---|---|
 | 200 | `{"success": true, "message": "Channel deleted successfully."}` |
 | 400 | `Cannot delete a channel while its import is in progress.` |
+| 404 | `Channel not found.` |
+
+## Mappings
+
+A mapping pairs one audio message with one text message of the same channel (stage 2 of the pipeline). The mapper UI holds the whole set and sends it in one request.
+
+- A mapping is keyed by the **audio** message: one audio has at most one text.
+- One text can be mapped to many audios.
+- A message can be on both sides (an audio post with a caption).
+- `source` is `manual` (human pair), `auto` (accepted suggestion) or `unknown`.
+
+### Mapping object
+
+```json
+{ "text_message_id": "55", "media_message_id": "67", "source": "manual", "updated_at": "2026-10-14T18:00:00.000Z" }
+```
+
+IDs are Telegram `message_id` values, returned as strings because they are BigInt values.
+
+### `PUT /api/channels/:channelId/mappings`
+
+Replaces the channel's **full** mapping set. A request with the same body gives the same result. An empty array clears all mappings.
+
+```bash
+curl -b cookies.txt -X PUT -H 'Content-Type: application/json' \
+  -d '{"mappings":[{"text_message_id":"55","media_message_id":"67","source":"manual"}]}' \
+  http://localhost:3000/api/channels/1234567890/mappings
+```
+
+Each item takes `text_message_id` and `media_message_id` as digit strings or integers (send IDs above 2^53 as strings), and an optional `source` (default `unknown`). The request is validated before anything is written. If one item fails, nothing is written:
+
+1. `:channelId` is a positive integer and a tracked channel.
+2. `mappings` is an array with at most 50,000 items.
+3. Each ID is a positive integer that fits in `BIGINT`, and `source` is one of the three values.
+4. No `media_message_id` occurs twice.
+5. Every `media_message_id` is a stored message of this channel and is audio: `telegram_json.media.media_type` is `audio` or `voice`, or `telegram_json.media.mime_type` starts with `audio/`.
+6. Every `text_message_id` is a stored message of this channel with a non-empty `telegram_json.text` after trimming. Text that is only whitespace counts as no text.
+
+Checks 5 and 6 run only when checks 1–4 pass, and use one database query for the whole set.
+
+| Status | Body |
+|---|---|
+| 200 | `{"success": true, "channel_id": "1234567890", "count": 100, "updated_at": "<ISO>"}` |
+| 400 | `Request body is not valid JSON.`, `Invalid channel ID.`, or the problem list below |
+| 404 | `Channel not found.` |
+| 413 | `Request body exceeds the 5 MB limit.` |
+
+A rejected set returns the first problem as `error`, and up to 20 problems in `details`. `index` is the item position, and is absent for problems with the whole `mappings` field:
+
+```json
+{
+  "success": false,
+  "error": "mappings[3].media_message_id is not an audio or voice message.",
+  "details": [ { "index": 3, "field": "media_message_id", "reason": "is not an audio or voice message." } ]
+}
+```
+
+**Body size.** This route accepts JSON bodies up to **5 MB** (5,000 pairs are about 385 KB; 50,000 pairs are about 4 MB). The auth check runs before the body is parsed, so an unauthenticated call gets `401` whatever its size. All other routes keep the default 100 KB limit.
+
+**While importing.** A `running` channel accepts mapping writes. Mappings reference only stored messages, and the validation checks that.
+
+**Concurrent writes.** The write locks the channel row (`SELECT … FOR UPDATE`) in the same transaction as the replace. Overlapping PUTs for one channel run one after the other, and the last write wins. There is no history and no version check, so the earlier set is lost without a warning. The write checks again that the channel exists under the lock, and returns `404` when a delete removed it while the request ran.
+
+### `GET /api/channels/:channelId/mappings`
+
+```bash
+curl -b cookies.txt http://localhost:3000/api/channels/1234567890/mappings
+```
+
+```json
+{
+  "success": true,
+  "channel_id": "1234567890",
+  "updated_at": "2026-10-14T18:00:00.000Z",
+  "mappings": [ /* mapping objects, ordered by media_message_id ascending */ ]
+}
+```
+
+The top-level `updated_at` is the latest row time, or `null` when the channel has no mappings. An empty list is a normal `200`.
+
+| Status | Body |
+|---|---|
+| 200 | as above |
+| 400 | `Invalid channel ID.` |
 | 404 | `Channel not found.` |
 
 ## Media
