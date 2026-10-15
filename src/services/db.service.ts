@@ -18,7 +18,12 @@ export interface ChannelProgressWithCount extends ChannelProgress {
   mapping_count: number;
 }
 
-export type MappingSource = 'manual' | 'auto' | 'unknown';
+/**
+ * Allowed mapping sources: the one list for the type, the API check and the SQL CHECK.
+ * The CHECK applies only when the table is created, so a change here also needs a constraint change on existing databases.
+ */
+export const MAPPING_SOURCES = ['manual', 'auto', 'unknown'] as const;
+export type MappingSource = (typeof MAPPING_SOURCES)[number];
 
 /** A text↔audio pair as sent by a client. IDs are canonical digit strings (BigInt-safe). */
 export interface MappingInput {
@@ -101,7 +106,7 @@ export class DbService {
             channel_id BIGINT NOT NULL,
             media_message_id BIGINT NOT NULL,
             text_message_id BIGINT NOT NULL,
-            source TEXT NOT NULL CHECK (source IN ('manual', 'auto', 'unknown')),
+            source TEXT NOT NULL CHECK (source IN (${MAPPING_SOURCES.map((s) => `'${s}'`).join(', ')})),
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             PRIMARY KEY (channel_id, media_message_id)

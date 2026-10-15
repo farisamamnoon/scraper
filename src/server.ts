@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import crypto from 'crypto';
 import { matchedData, param, query, validationResult } from 'express-validator';
-import { DbService } from './services/db.service';
+import { DbService, MAPPING_SOURCES } from './services/db.service';
 import type { ChannelProgress, ChannelStatus, MappingInput, MappingSource } from './services/db.service';
 import { Importer } from './importer';
 import { TelegramService } from './services/telegram.service';
@@ -14,7 +14,7 @@ const MAX_MAPPINGS = 50000;
 const MAX_MAPPING_PROBLEMS = 20;
 const MAPPINGS_BODY_LIMIT = '5mb';
 const MAX_BIGINT = BigInt('9223372036854775807');
-const mappingSources: MappingSource[] = ['manual', 'auto', 'unknown'];
+const mappingSources: readonly string[] = MAPPING_SOURCES;
 
 interface MappingProblem {
   index?: number;
