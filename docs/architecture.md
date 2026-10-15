@@ -4,9 +4,7 @@ How the importer is put together, what it stores, and how it behaves when things
 
 ## Context
 
-The wider project migrates audio lectures (and their text descriptions) out of Telegram channels into a structured database. It has four stages: export → map audio to descriptions → LLM cleanup/tagging → validated delivery.
-
-This repo is **stage 1, export**. It pulls every message and attachment from a public channel and stores them in a form later stages can query. Stage 2 is the Next.js mapper in `../telegram-pipeline-ui`. That UI was written against an earlier n8n-based backend, so its API contract doesn't match this service yet (see [status.md](status.md#open-questions)). The mapper stores its text↔audio pairs here, in `channel_mappings`.
+The importer is Stage 1 of a four-stage pipeline that migrates audio lectures and their descriptions out of Telegram. It pulls every message and attachment from a public channel. It also stores the text↔audio pairs from the Stage 2 mapper in `channel_mappings`. [pipeline.md](pipeline.md) covers all four stages, the services that own them, and the data they read from this one.
 
 ## Components
 

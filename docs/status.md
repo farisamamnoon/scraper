@@ -48,12 +48,15 @@ Ordered roughly by impact. None are fixed at this checkpoint.
 
 These need a decision, not just code.
 
-- **Integration with the mapper UI.** `../telegram-pipeline-ui` (last commit 2026-02-25) was built against an n8n backend: `POST` to an n8n webhook to queue, `GET /channel` and `GET /channel/:id/message` to read, and HLS (`s3_hls_url`) for audio. This service exposes `/api/channels…` and raw S3 objects with no HLS transcoding. Either the UI adapts to this API, an adapter layer is added here, or n8n keeps a role. Which one?
+- **Stage 3 owner and storage.** Who builds the large language model (LLM) text processing? Does it store its results here, behind new endpoints, or in its own service?
+- **Stage 4 input.** The delivery service writes to the destination database. Does it read validated records from this API, from this database, or from wherever Stage 3 stores them?
+- **Stage 4 review grid.** The product spec puts the validation grid in the mapper UI. Does it stay there, next to the delivery service it feeds?
 - **Processing chunks.** Is grouping messages by time window (PR #10) still wanted for stage 2 or 3? If so, why was it reverted?
 - **The production server's checkout.** Which branch is `/home/scraper-user/scraper` on? Should the workflow pull `deploy` instead of `main`?
 - **Live following.** Should completed channels be re-polled on a schedule, or is this purely a one-off history importer?
 
 ## Changelog
 
+- **2026-10-15**: Pipeline context documented in [pipeline.md](pipeline.md): the four stages, their owners, and the data contracts other stages rely on. Stage 4 delivery is a separate service. The mapper UI integration question is answered: the UI adapts to this API through its own server-side routes. n8n has no role. Three pipeline questions added.
 - **2026-10-15**: Mapper integration, gap 1. New `channel_mappings` table, plus `PUT` and `GET /api/channels/:channelId/mappings` to store and read text↔audio pairs. `DELETE /api/channels/:channelId` now also deletes the channel's mappings. Known issues 12–15 added. Channel objects from `GET /api/progress` and `GET /api/channels` now include `mapping_count`.
 - **2026-10-04**: Documentation revamp for Claude Code. `AGENTS.md` and `.agents/rules/` were replaced by `CLAUDE.md` and path-scoped `.claude/rules/`, `README.md` was rewritten, and `docs/` was added. No code changes.

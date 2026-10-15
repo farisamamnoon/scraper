@@ -2,7 +2,9 @@
 
 Copies the full message history of public Telegram channels into **PostgreSQL** (one cleaned JSONB row per message) and streams every photo and document to **S3-compatible storage**. A small password-protected dashboard lets you queue channels, watch progress, and browse what was imported.
 
-This is the export stage of a pipeline for migrating audio lectures out of Telegram. The mapping UI lives in [`salsabeel-workflow-frontend`](https://github.com/al-fikra-labs/salsabeel-workflow-frontend) (checked out next to this repo as `../telegram-pipeline-ui`). For where the project stands, read **[docs/status.md](docs/status.md)** first.
+It's Stage 1 of a four-stage pipeline that migrates audio lectures out of Telegram. It also stores the text↔audio mappings that Stage 2 produces. [docs/pipeline.md](docs/pipeline.md) explains the stages and which service owns each.
+
+The mapper UI lives in [`salsabeel-workflow-frontend`](https://github.com/al-fikra-labs/salsabeel-workflow-frontend), checked out next to this repo as `../telegram-pipeline-ui`. For where the project stands, read [docs/status.md](docs/status.md) first.
 
 **Stack:** Node 20 · TypeScript · [GramJS](https://gram.js.org) (MTProto) · `pg` · AWS SDK v3 · Express · Winston · Jest
 
@@ -88,6 +90,7 @@ Production runs the Docker image from the `deploy` branch on a single server. A 
 
 | Doc | Read it for |
 |---|---|
+| [docs/pipeline.md](docs/pipeline.md) | The four pipeline stages, who owns each, and the data other stages read from this service |
 | [docs/status.md](docs/status.md) | Current checkpoint, known issues, open decisions |
 | [docs/architecture.md](docs/architecture.md) | Components, import algorithm, data model, failure behavior |
 | [docs/api.md](docs/api.md) | HTTP endpoints with request and response examples |

@@ -2,7 +2,9 @@
 
 Telegram historical importer: a long-running Node/TypeScript process that copies the full message history of public Telegram channels into PostgreSQL (cleaned JSONB) and streams media attachments to S3-compatible storage. An Express server on the same process serves a password-protected dashboard and REST API for registering channels and watching progress.
 
-It is the export stage of a larger pipeline that migrates audio lectures out of Telegram; the human-facing mapping UI lives in the sibling checkout `../telegram-pipeline-ui` (GitHub: `al-fikra-labs/salsabeel-workflow-frontend`, with its own `CLAUDE.md`). See `docs/status.md` for where the project stands and what is unresolved.
+It is Stage 1 (export) of a four-stage migration pipeline and also stores Stage 2's text↔audio mappings. Stage 3 (LLM text processing) is not built, and Stage 4 (database delivery) is a separate service. Read `docs/pipeline.md` before changing anything another stage reads: `telegram_json`, S3 keys, `channel_mappings`, or the `/api/*` shapes.
+
+The mapper UI is the sibling checkout `../telegram-pipeline-ui` (GitHub: `al-fikra-labs/salsabeel-workflow-frontend`, with its own `CLAUDE.md`). See `docs/status.md` for where the project stands and what is unresolved.
 
 ## Commands
 
