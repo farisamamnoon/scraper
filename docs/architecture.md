@@ -114,7 +114,7 @@ Text↔audio pairs written by the mapper UI through `PUT /api/channels/:channelI
 | `source` | `TEXT` | `CHECK` in `manual`, `auto`, `unknown` |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | Default `NOW()`. Time zone aware, unlike the older tables, so the API returns correct UTC times |
 
-A PUT replaces the channel's whole set: `DELETE` plus one bulk `INSERT … SELECT FROM unnest(…)` in a transaction. The IDs refer to `telegram_messages.message_id` of the same channel. The API checks that at write time.
+A PUT replaces the channel's whole set in one transaction: it locks the channel row with `SELECT … FOR UPDATE`, then runs `DELETE` plus one bulk `INSERT … SELECT FROM unnest(…)`. The lock makes overlapping PUTs for one channel run one after the other, so the last write wins instead of failing on the primary key. The IDs refer to `telegram_messages.message_id` of the same channel. The API checks that at write time.
 
 There are no foreign keys between the tables. `deleteChannel` removes the channel, its messages and its mappings in one transaction.
 

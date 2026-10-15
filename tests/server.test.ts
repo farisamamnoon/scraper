@@ -590,6 +590,16 @@ describe('Express API Server Endpoints', () => {
       expect(mockDbService.replaceChannelMappings).not.toHaveBeenCalled();
     });
 
+    it('should return 404 when the channel is deleted before the write', async () => {
+      // The first check finds the channel; the locked write does not.
+      mockDbService.replaceChannelMappings.mockResolvedValue(null);
+
+      const response = await put({ mappings: [{ text_message_id: '55', media_message_id: '67' }] }).expect(404);
+
+      expect(response.body).toEqual({ success: false, error: 'Channel not found.' });
+      expect(mockDbService.replaceChannelMappings).toHaveBeenCalledTimes(1);
+    });
+
     it('should return 400 for a malformed channel ID', async () => {
       const response = await request(app)
         .put('/api/channels/abc/mappings')

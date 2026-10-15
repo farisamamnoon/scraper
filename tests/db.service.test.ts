@@ -52,11 +52,17 @@ describe('DbService', () => {
 
   describe('replaceChannelMappings', () => {
     const now = new Date('2026-10-14T18:00:00.000Z');
+    const lockSql = 'SELECT channel_id FROM telegram_channels WHERE channel_id = $1 FOR UPDATE';
 
-    it('should delete then bulk insert with unnest in one transaction', async () => {
-      mockClient.query.mockImplementation(async (sql: string) =>
-        sql.startsWith('SELECT NOW()') ? { rows: [{ updated_at: now }] } : { rows: [] }
-      );
+    // A tracked channel: the lock finds its row, and NOW() returns the write time.
+    const trackedChannelQueries = async (sql: string) => {
+      if (sql.startsWith('SELECT NOW()')) return { rows: [{ updated_at: now }] };
+      if (sql === lockSql) return { rows: [{ channel_id: '123456789' }] };
+      return { rows: [] };
+    };
+
+    it('should lock the channel row, then delete and bulk insert with unnest in one transaction', async () => {
+      mockClient.query.mockImplementation(trackedChannelQueries);
 
       const result = await dbService.replaceChannelMappings('123456789', [
         { text_message_id: '55', media_message_id: '67', source: 'manual' },
@@ -66,10 +72,12 @@ describe('DbService', () => {
       expect(result).toEqual({ count: 2, updated_at: now });
       const sql = clientSql();
       expect(sql[0]).toBe('BEGIN');
-      expect(sql[1]).toBe('DELETE FROM channel_mappings WHERE channel_id = $1');
-      expect(sql[2]).toContain('unnest($2::bigint[], $3::bigint[], $4::text[])');
+      expect(sql[1]).toBe(lockSql);
+      expect(mockClient.query.mock.calls[1][1]).toEqual(['123456789']);
+      expect(sql[2]).toBe('DELETE FROM channel_mappings WHERE channel_id = $1');
+      expect(sql[3]).toContain('unnest($2::bigint[], $3::bigint[], $4::text[])');
       expect(sql[sql.length - 1]).toBe('COMMIT');
-      expect(mockClient.query.mock.calls[2][1]).toEqual([
+      expect(mockClient.query.mock.calls[3][1]).toEqual([
         '123456789',
         ['67', '68'],
         ['55', '55'],
@@ -79,21 +87,30 @@ describe('DbService', () => {
     });
 
     it('should only delete when the set is empty', async () => {
-      mockClient.query.mockImplementation(async (sql: string) =>
-        sql.startsWith('SELECT NOW()') ? { rows: [{ updated_at: now }] } : { rows: [] }
-      );
+      mockClient.query.mockImplementation(trackedChannelQueries);
 
       const result = await dbService.replaceChannelMappings('123456789', []);
 
-      expect(result.count).toBe(0);
+      expect(result?.count).toBe(0);
       expect(clientSql().some((s) => s.startsWith('INSERT'))).toBe(false);
       expect(clientSql()).toContain('DELETE FROM channel_mappings WHERE channel_id = $1');
+    });
+
+    it('should return null and write nothing when the channel is not tracked', async () => {
+      // The lock finds no row: the channel was never tracked or a delete removed it first.
+      const result = await dbService.replaceChannelMappings('123456789', [
+        { text_message_id: '55', media_message_id: '67', source: 'manual' },
+      ]);
+
+      expect(result).toBeNull();
+      expect(clientSql()).toEqual(['BEGIN', lockSql, 'ROLLBACK']);
+      expect(mockClient.release).toHaveBeenCalledTimes(1);
     });
 
     it('should roll back and release the client when the insert fails', async () => {
       mockClient.query.mockImplementation(async (sql: string) => {
         if (sql.trim().startsWith('INSERT')) throw new Error('insert failed');
-        return { rows: [] };
+        return trackedChannelQueries(sql);
       });
 
       await expect(

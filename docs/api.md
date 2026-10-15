@@ -201,7 +201,7 @@ A rejected set returns the first problem as `error`, and up to 20 problems in `d
 
 **While importing.** A `running` channel accepts mapping writes. Mappings reference only stored messages, and the validation checks that.
 
-The last write wins. There is no history and no concurrency check.
+**Concurrent writes.** The write locks the channel row (`SELECT … FOR UPDATE`) in the same transaction as the replace. Overlapping PUTs for one channel run one after the other, and the last write wins. There is no history and no version check, so the earlier set is lost without a warning. The write checks again that the channel exists under the lock, and returns `404` when a delete removed it while the request ran.
 
 ### `GET /api/channels/:channelId/mappings`
 

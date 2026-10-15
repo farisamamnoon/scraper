@@ -572,7 +572,12 @@ export function createServer(
           return;
         }
 
+        // The channel can be deleted after the check above. The write checks it again under a lock.
         const result = await dbService.replaceChannelMappings(channelId, mappings);
+        if (!result) {
+          res.status(404).json({ success: false, error: 'Channel not found.' });
+          return;
+        }
         logger.info(`REST API: Stored ${result.count} mappings for channel @${channel.channel_username || channelId}.`);
 
         res.json({

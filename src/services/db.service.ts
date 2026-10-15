@@ -393,15 +393,26 @@ export class DbService {
   }
 
   /**
-   * Replaces the whole mapping set of a channel in one transaction. Returns the stored count and write time.
+   * Replaces the whole mapping set of a channel in one transaction. Returns the stored count and write time,
+   * or null when the channel is not tracked.
+   * Locks the channel row first, so overlapping replaces run one after the other (the last write wins)
+   * and a replace cannot write mappings for a channel that deleteChannel removes.
    */
   async replaceChannelMappings(
     channelId: string | number | bigint,
     mappings: MappingInput[]
-  ): Promise<{ count: number; updated_at: Date }> {
+  ): Promise<{ count: number; updated_at: Date } | null> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      const locked = await client.query(
+        'SELECT channel_id FROM telegram_channels WHERE channel_id = $1 FOR UPDATE',
+        [channelId.toString()]
+      );
+      if (locked.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return null;
+      }
       await client.query('DELETE FROM channel_mappings WHERE channel_id = $1', [channelId.toString()]);
       if (mappings.length > 0) {
         await client.query(
