@@ -35,11 +35,13 @@ describe('DbService', () => {
   });
 
   describe('deleteChannel', () => {
-    it('should delete mappings, messages and the channel in one transaction', async () => {
+    it('should lock the channel row, then delete mappings, messages and the channel in one transaction', async () => {
       await dbService.deleteChannel('123456789');
 
+      // The lock comes first, so a mapping replace cannot add rows after the mappings DELETE.
       expect(clientSql()).toEqual([
         'BEGIN',
+        'SELECT channel_id FROM telegram_channels WHERE channel_id = $1 FOR UPDATE',
         'DELETE FROM channel_mappings WHERE channel_id = $1',
         'DELETE FROM telegram_messages WHERE channel_id = $1',
         'DELETE FROM telegram_channels WHERE channel_id = $1',

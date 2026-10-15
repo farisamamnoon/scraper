@@ -116,7 +116,7 @@ Text↔audio pairs written by the mapper UI through `PUT /api/channels/:channelI
 
 A PUT replaces the channel's whole set in one transaction: it locks the channel row with `SELECT … FOR UPDATE`, then runs `DELETE` plus one bulk `INSERT … SELECT FROM unnest(…)`. The lock makes overlapping PUTs for one channel run one after the other, so the last write wins instead of failing on the primary key. The IDs refer to `telegram_messages.message_id` of the same channel. The API checks that at write time.
 
-There are no foreign keys between the tables. `deleteChannel` removes the channel, its messages and its mappings in one transaction.
+There are no foreign keys between the tables. `deleteChannel` removes the channel, its messages and its mappings in one transaction. It takes the same channel row lock first, so a PUT that overlaps a delete either commits before it (and the delete removes its rows) or finds no channel and returns `404`. Neither order leaves mapping rows without a channel.
 
 ### `telegram_json` shape
 

@@ -57,7 +57,7 @@ These need a decision, not just code.
 
 ## Changelog
 
-- **2026-10-15**: Mappings review fixes. `replaceChannelMappings` locks the channel row before the replace, so two overlapping PUTs no longer fail with `500` on the primary key; the last write wins.
+- **2026-10-15**: Mappings review fixes. `replaceChannelMappings` locks the channel row before the replace, so two overlapping PUTs no longer fail with `500` on the primary key; the last write wins. `deleteChannel` takes the same lock first, so a PUT that overlaps a delete can no longer leave mapping rows without a channel.
 - **2026-10-15**: Pipeline context documented in [pipeline.md](pipeline.md): the four stages, their owners, and the data contracts other stages rely on. Stage 4 delivery is a separate service. The mapper UI integration question is answered: the UI adapts to this API through its own server-side routes. n8n has no role. Three pipeline questions added.
 - **2026-10-15**: Mapper integration, gap 1. New `channel_mappings` table, plus `PUT` and `GET /api/channels/:channelId/mappings` to store and read text↔audio pairs. `DELETE /api/channels/:channelId` now also deletes the channel's mappings. Known issues 12–15 added. Channel objects from `GET /api/progress` and `GET /api/channels` now include `mapping_count`.
 - **2026-10-04**: Documentation revamp for Claude Code. `AGENTS.md` and `.agents/rules/` were replaced by `CLAUDE.md` and path-scoped `.claude/rules/`, `README.md` was rewritten, and `docs/` was added. No code changes.

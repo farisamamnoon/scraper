@@ -455,11 +455,16 @@ export class DbService {
 
   /**
    * Deletes a channel and all its stored messages and mappings in a transaction.
+   * Takes the same channel row lock as replaceChannelMappings first, so an overlapping replace
+   * either finishes before the delete (and its rows are deleted) or finds no channel.
    */
   async deleteChannel(channelId: string | number | bigint): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT channel_id FROM telegram_channels WHERE channel_id = $1 FOR UPDATE', [
+        channelId.toString()
+      ]);
       await client.query('DELETE FROM channel_mappings WHERE channel_id = $1', [channelId.toString()]);
       await client.query('DELETE FROM telegram_messages WHERE channel_id = $1', [channelId.toString()]);
       await client.query('DELETE FROM telegram_channels WHERE channel_id = $1', [channelId.toString()]);
