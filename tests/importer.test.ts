@@ -2,6 +2,7 @@ import { Importer } from '../src/importer';
 import { DbService } from '../src/services/db.service';
 import { S3Service } from '../src/services/s3.service';
 import { TelegramService } from '../src/services/telegram.service';
+import { planChannelTail } from '../src/batching';
 
 describe('Importer message extraction and logic', () => {
   let mockDbService: jest.Mocked<DbService>;
@@ -20,6 +21,7 @@ describe('Importer message extraction and logic', () => {
       upsertMessage: jest.fn(),
       getAllChannels: jest.fn(),
       getGlobalStats: jest.fn(),
+      rebuildOpenBatches: jest.fn(),
     } as unknown as jest.Mocked<DbService>;
 
     mockS3Service = {
@@ -125,6 +127,38 @@ describe('Importer message extraction and logic', () => {
       expect(cleanJson.forwards).toBe(0);
       expect(cleanJson.edit_date).toBeNull();
       expect(cleanJson.reply_to).toBeUndefined();
+    });
+  });
+
+  describe('importChannel batching', () => {
+    const channel = { channel_id: '123', channel_username: 'u', status: 'pending' } as any;
+
+    beforeEach(() => {
+      mockTelegramService.getChannelEntity.mockResolvedValue({ id: BigInt(123), title: 'T', username: 'u' } as any);
+      mockDbService.getChannelProgress.mockResolvedValue({ last_processed_message_id: '5' } as any);
+      // No messages after the checkpoint: the import completes at once.
+      mockTelegramService.executeWithRetry.mockResolvedValue([] as any);
+    });
+
+    it('rebuilds the batches after the import completes', async () => {
+      mockDbService.rebuildOpenBatches.mockResolvedValue({ order: 'audio_first', batch_count: 3, open_count: 0 });
+
+      await importer.importChannel(channel);
+
+      expect(mockDbService.rebuildOpenBatches).toHaveBeenCalledWith('123', planChannelTail);
+      const completedOrder = mockDbService.updateChannelStatus.mock.invocationCallOrder[
+        mockDbService.updateChannelStatus.mock.calls.findIndex(([, status]) => status === 'completed')
+      ];
+      expect(completedOrder).toBeLessThan(mockDbService.rebuildOpenBatches.mock.invocationCallOrder[0]);
+    });
+
+    it('keeps the channel completed when the rebuild fails', async () => {
+      mockDbService.rebuildOpenBatches.mockRejectedValue(new Error('deadlock'));
+
+      await importer.importChannel(channel);
+
+      expect(mockDbService.updateChannelStatus).toHaveBeenCalledWith('123', 'completed');
+      expect(mockDbService.updateChannelStatus).not.toHaveBeenCalledWith(expect.anything(), 'failed');
     });
   });
 });

@@ -4,6 +4,7 @@ import { DbService, ChannelProgress } from './services/db.service';
 import { S3Service } from './services/s3.service';
 import { TelegramService, TelegramMediaInfo } from './services/telegram.service';
 import { logger } from './logger';
+import { planChannelTail } from './batching';
 
 export class Importer {
   private dbService: DbService;
@@ -157,6 +158,7 @@ export class Importer {
         if (!messages || messages.length === 0) {
           logger.info(`[Channel ${resolvedTitle}] Import complete. No new messages found.`);
           await this.dbService.updateChannelStatus(resolvedId, 'completed');
+          await this.rebuildBatches(resolvedId, resolvedTitle);
           return;
         }
 
@@ -240,6 +242,21 @@ export class Importer {
     } catch (error: any) {
       logger.error(`[Channel ${channelIdStr}] Import failed:`, error);
       await this.dbService.updateChannelStatus(channelIdStr, 'failed');
+    }
+  }
+
+  /**
+   * Rebuilds the open end of the channel's mapping batches after an import completes.
+   * A failure is logged only: the import itself succeeded, and POST /api/channels/:id/batches can retry.
+   */
+  private async rebuildBatches(channelId: string, title: string): Promise<void> {
+    try {
+      const result = await this.dbService.rebuildOpenBatches(channelId, planChannelTail);
+      if (result) {
+        logger.info(`[Channel ${title}] Built batches: ${result.batch_count} in total, ${result.open_count} open.`);
+      }
+    } catch (err) {
+      logger.error(`[Channel ${title}] Failed to rebuild batches:`, err);
     }
   }
 

@@ -32,7 +32,7 @@ Ordered roughly by impact. None are fixed at this checkpoint.
 
    Production (managed Postgres plus R2 or S3) is unaffected. A fix would make SSL and path-style addressing configurable through env vars.
 4. **The test suite depends on a local `.env`.** `config.test.ts › should fail if DASHBOARD_PASSWORD is missing` expects `DASHBOARD_PASSWORD` to be the *only* missing variable. It passes only when `dotenv` loads a `.env` that supplies all the others, so it fails in clean checkouts and in CI.
-5. **`completed` is terminal.** Channels aren't re-polled for new posts. Re-queue by setting `status = 'pending'`.
+5. **`completed` is terminal.** Channels aren't re-polled for new posts. Re-queue by setting `status = 'pending'`. When the import completes again, it rebuilds only the open end of the channel's batches; frozen batches stay as they are.
 6. **There's no API or UI to retry a `failed` channel.** It's SQL only.
 7. **`GET /api/channels/:id/messages` returns everything, unpaginated.** It will get slow and memory-heavy on large channels.
 8. **Deleting a channel leaves its S3 objects behind.**
@@ -51,11 +51,13 @@ These need a decision, not just code.
 - **Stage 3 owner and storage.** Who builds the large language model (LLM) text processing? Does it store its results here, behind new endpoints, or in its own service?
 - **Stage 4 input.** The delivery service writes to the destination database. Does it read validated records from this API, from this database, or from wherever Stage 3 stores them?
 - **Stage 4 review grid.** The product spec puts the validation grid in the mapper UI. Does it stay there, next to the delivery service it feeds?
-- **Processing chunks.** Is grouping messages by time window (PR #10) still wanted for stage 2 or 3? If so, why was it reverted?
+- **Processing chunks.** Is grouping messages by time window (PR #10) still wanted for stage 3? Stage 2 now has its own batches (see [batching.md](batching.md)), which use time gaps and the channel's posting order instead of a fixed time window.
 - **The production server's checkout.** Which branch is `/home/scraper-user/scraper` on? Should the workflow pull `deploy` instead of `main`?
 - **Live following.** Should completed channels be re-polled on a schedule, or is this purely a one-off history importer?
 
 ## Changelog
+
+- **2026-10-15**: Stage 2 batches ([batching.md](batching.md)). New `channel_batches` table and `telegram_channels.batch_order` column. The importer rebuilds a channel's open batches when an import completes. New routes: `GET` and `POST /api/channels/:channelId/batches`, and `PUT /api/channels/:channelId/batches/:batchNo/mappings`, which replaces only one batch's mappings. Channels that completed before this change need one `POST …/batches` each.
 
 - **2026-10-15**: Mappings review fixes. `replaceChannelMappings` locks the channel row before the replace, so two overlapping PUTs no longer fail with `500` on the primary key; the last write wins. `deleteChannel` takes the same lock first, so a PUT that overlaps a delete can no longer leave mapping rows without a channel. A text message that holds only whitespace no longer passes the "has text" check.
 - **2026-10-15**: Pipeline context documented in [pipeline.md](pipeline.md): the four stages, their owners, and the data contracts other stages rely on. Stage 4 delivery is a separate service. The mapper UI integration question is answered: the UI adapts to this API through its own server-side routes. n8n has no role. Three pipeline questions added.

@@ -26,6 +26,7 @@ npx jest tests/server.test.ts -t "DELETE"   # single file / test name
 | `src/index.ts` | Bootstrapper. The only place services are constructed. Boot order: schema → Telegram connect → reset `running`→`pending` → importer loop → HTTP server. Owns SIGINT/SIGTERM shutdown. |
 | `src/config.ts` | Parses and validates env vars into a typed `Config`. Returns `{}` when `NODE_ENV=test`. |
 | `src/importer.ts` | Scheduler (5s tick, `IMPORT_CONCURRENCY` slots) and per-channel import loop: 100-message batches oldest→newest, media to S3, message upsert, progress checkpoint per batch. |
+| `src/batching.ts` | Pure batch planner for Stage 2: learns the channel order, cuts messages into 10–50 message batches, decides `open`/`frozen`. Rules in `docs/batching.md`. |
 | `src/server.ts` | `createServer(...)`: cookie auth, static `public/`, all `/api/*` routes, global error handler. |
 | `src/mappings.ts` | Pure request rules for `PUT …/mappings`: `parseTelegramId`, `parseMappingsBody`, item and body-size limits. |
 | `src/services/telegram.service.ts` | GramJS client, session handling, `executeWithRetry`, media metadata/filename derivation, media download. |
@@ -35,7 +36,7 @@ npx jest tests/server.test.ts -t "DELETE"   # single file / test name
 | `public/index.html` | Single-file vanilla dashboard (inline CSS/JS). `public/login.html` is the password page. |
 | `tests/` | `config`, `importer` (`extractCleanJson`), `server` (supertest), `db.service` (mocked pg pool) suites. |
 
-Deeper explanations: `docs/architecture.md` (data flow, schema, recovery), `docs/api.md` (endpoints), `docs/deployment.md` (Docker, `deploy` branch, sessions).
+Deeper explanations: `docs/architecture.md` (data flow, schema, recovery), `docs/api.md` (endpoints), `docs/batching.md` (Stage 2 batches), `docs/deployment.md` (Docker, `deploy` branch, sessions).
 
 ## Invariants
 

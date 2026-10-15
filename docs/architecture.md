@@ -62,7 +62,7 @@ upsert channel (resolved id, username, title)
 minId := last_processed_message_id || 0
 loop:
   batch := getMessages(entity, minId, limit 100, oldest→newest)   // id > minId
-  if batch empty: status := completed; stop
+  if batch empty: status := completed; rebuild open batches; stop   // rebuild errors: log only
   for msg in batch:
     if msg has photo/document:
       key := existing media_key for (channel, msg)
