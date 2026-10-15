@@ -41,11 +41,12 @@ Returned by the list and progress endpoints. IDs are strings because they are Bi
   "last_processed_message_id": "4567",
   "status": "running",
   "message_count": 4210,
-  "mapping_count": 312
+  "mapping_count": 312,
+  "batch_count": 0
 }
 ```
 
-`status` is one of `pending`, `running`, `completed`, `failed`. `mapping_count` is the number of stored text↔audio mappings (see [Mappings](#mappings)).
+`status` is one of `pending`, `running`, `completed`, `failed`. `mapping_count` is the number of stored text↔audio mappings (see [Mappings](#mappings)). `batch_count` is the number of stored batches (see [Batches](#batches)). It is `0` until the first rebuild.
 
 ### `GET /api/progress`
 
@@ -225,6 +226,90 @@ The top-level `updated_at` is the latest row time, or `null` when the channel ha
 | 200 | as above |
 | 400 | `Invalid channel ID.` |
 | 404 | `Channel not found.` |
+
+## Batches
+
+A batch is a stable range of consecutive messages that the mapper shows at one time. [batching.md](batching.md) explains how the scraper cuts a channel into batches and when a batch is frozen.
+
+### Batch object
+
+```json
+{
+  "batch_no": 2,
+  "first_message_id": "41",
+  "last_message_id": "80",
+  "message_count": 24,
+  "audio_count": 12,
+  "mapped_audio_count": 3,
+  "status": "frozen",
+  "first_date": "2021-03-04T10:00:00.000Z",
+  "last_date": "2021-03-05T08:12:00.000Z",
+  "frozen_at": "2026-10-15T09:00:00.000Z"
+}
+```
+
+- `first_message_id` and `last_message_id` are inclusive. Every message of the channel in that ID range belongs to the batch.
+- `message_count` counts only the messages that a person maps or checks: audio messages, and non-audio messages with text.
+- `mapped_audio_count` is the number of stored mappings whose audio is in the range.
+- `status` is `frozen` (the range never changes) or `open` (only the last batch; the next rebuild can replace it).
+- `first_date` and `last_date` have the time zone offset of known issue 15 in [status.md](status.md).
+
+### `GET /api/channels/:channelId/batches`
+
+```bash
+curl -b cookies.txt http://localhost:3000/api/channels/1234567890/batches
+```
+
+```json
+{ "success": true, "channel_id": "1234567890", "order": "audio_first", "batches": [ /* batch objects, by batch_no */ ] }
+```
+
+`order` is the learned channel order, `audio_first` or `text_first`. It is `null` before the first rebuild. A channel with no batches returns an empty list.
+
+| Status | Body |
+|---|---|
+| 200 | as above |
+| 400 | `Invalid channel ID.` |
+| 404 | `Channel not found.` |
+
+### `POST /api/channels/:channelId/batches`
+
+Rebuilds the open end of the channel's batches. The importer also runs this when an import completes. Use this route for channels that completed before batching existed. Frozen batches never change, so you can call it at any time.
+
+```bash
+curl -b cookies.txt -X POST http://localhost:3000/api/channels/1234567890/batches
+```
+
+| Status | Body |
+|---|---|
+| 200 | `{"success": true, "channel_id": "1234567890", "order": "audio_first", "batch_count": 140, "open_count": 0}` |
+| 400 | `Invalid channel ID.` |
+| 404 | `Channel not found.` |
+| 409 | `Batches are built after the import completes.` The channel status is not `completed` |
+
+`batch_count` is the number of all batches of the channel after the rebuild. `open_count` is 0 or 1.
+
+### `PUT /api/channels/:channelId/batches/:batchNo/mappings`
+
+Replaces the mappings whose audio is inside one batch. Mappings of other batches stay as they are, so two people can map different batches of one channel at the same time. The write also freezes the batch.
+
+```bash
+curl -b cookies.txt -X PUT -H 'Content-Type: application/json' \
+  -d '{"mappings":[{"text_message_id":"38","media_message_id":"41","source":"manual"}]}' \
+  http://localhost:3000/api/channels/1234567890/batches/2/mappings
+```
+
+The body and the item checks are the same as for `PUT /api/channels/:channelId/mappings`, plus one check: every `media_message_id` must be inside the batch range. The `text_message_id` can be any text message of the channel, for example a series header in an earlier batch. An empty array clears the mappings of the batch.
+
+| Status | Body |
+|---|---|
+| 200 | `{"success": true, "channel_id": "1234567890", "batch_no": 2, "count": 1, "updated_at": "<ISO>"}` |
+| 400 | `Invalid channel ID.`, `Invalid batch number.`, `Request body is not valid JSON.`, or a problem list such as `mappings[0].media_message_id is not in batch 2.` |
+| 404 | `Channel not found.` or `Batch not found.` |
+| 409 | `Batch changed while saving. Load it again.` A rebuild replaced the open batch after the request read it. Nothing is written |
+| 413 | `Request body exceeds the 5 MB limit.` |
+
+**Concurrent writes.** The write locks the channel row, as the full-set PUT does. It checks again that the batch has the range it validated against, and returns `409` if not. A full-set PUT and a batch PUT on the same channel still overwrite each other: the last write wins.
 
 ## Media
 

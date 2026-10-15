@@ -1,5 +1,37 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import { logger } from '../logger';
+import { BATCH_STATUSES, CHANNEL_ORDERS } from '../batching';
+import type { BatchMessage, BatchStatus, ChannelOrder, TailPlan, TailPlanInput } from '../batching';
+
+// What counts as audio and as text, the same for mapping checks and batching.
+const IS_AUDIO_SQL = `COALESCE(
+          telegram_json->'media'->>'media_type' IN ('audio', 'voice')
+            OR telegram_json->'media'->>'mime_type' LIKE 'audio/%',
+          FALSE
+        )`;
+const HAS_TEXT_SQL = `COALESCE(telegram_json->>'text', '') ~ '\\S'`;
+
+const BATCH_COLUMNS_SQL = `
+  SELECT
+    b.batch_no,
+    b.first_message_id::TEXT,
+    b.last_message_id::TEXT,
+    b.message_count,
+    b.audio_count,
+    (SELECT COUNT(*) FROM channel_mappings m
+     WHERE m.channel_id = b.channel_id
+       AND m.media_message_id BETWEEN b.first_message_id AND b.last_message_id)::INTEGER AS mapped_audio_count,
+    b.status,
+    f.message_date AS first_date,
+    l.message_date AS last_date,
+    b.frozen_at
+  FROM channel_batches b
+  LEFT JOIN telegram_messages f ON f.channel_id = b.channel_id AND f.message_id = b.first_message_id
+  LEFT JOIN telegram_messages l ON l.channel_id = b.channel_id AND l.message_id = b.last_message_id`;
+
+const channelOrders: readonly string[] = CHANNEL_ORDERS;
+const toChannelOrder = (value: unknown): ChannelOrder | null =>
+  typeof value === 'string' && channelOrders.includes(value) ? (value as ChannelOrder) : null;
 
 export type ChannelStatus = 'pending' | 'running' | 'completed' | 'failed';
 
@@ -16,6 +48,7 @@ export interface ChannelProgress {
 export interface ChannelProgressWithCount extends ChannelProgress {
   message_count: number;
   mapping_count: number;
+  batch_count: number;
 }
 
 /**
@@ -43,6 +76,36 @@ export interface MappableMessageInfo {
   is_audio: boolean;
   has_text: boolean;
 }
+
+/** A stored batch: a stable range of consecutive messages that the mapper shows at one time. */
+export interface ChannelBatch {
+  batch_no: number;
+  first_message_id: string;
+  last_message_id: string;
+  /** Weighted size: audio messages plus non-audio messages with text. */
+  message_count: number;
+  audio_count: number;
+  /** Stored mappings whose audio is in the range. */
+  mapped_audio_count: number;
+  status: BatchStatus;
+  first_date: Date;
+  last_date: Date;
+  frozen_at: Date | null;
+}
+
+export interface BatchRebuildResult {
+  order: ChannelOrder;
+  /** All batches of the channel after the rebuild. */
+  batch_count: number;
+  open_count: number;
+}
+
+export type BatchMappingsResult =
+  | { status: 'ok'; count: number; updated_at: Date }
+  /** The channel or the batch does not exist. */
+  | { status: 'not_found' }
+  /** The batch range changed since the caller read it. */
+  | { status: 'conflict' };
 
 export interface ChannelListOptions {
   status?: ChannelStatus;
@@ -116,6 +179,23 @@ export class DbService {
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_channel_mappings_channel_id_text_message_id
         ON channel_mappings (channel_id, text_message_id);
+      `);
+
+      await client.query(`ALTER TABLE telegram_channels ADD COLUMN IF NOT EXISTS batch_order TEXT;`);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS channel_batches (
+            channel_id BIGINT NOT NULL,
+            batch_no INTEGER NOT NULL,
+            first_message_id BIGINT NOT NULL,
+            last_message_id BIGINT NOT NULL,
+            message_count INTEGER NOT NULL,
+            audio_count INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK (status IN (${BATCH_STATUSES.map((s) => `'${s}'`).join(', ')})),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            frozen_at TIMESTAMPTZ,
+            PRIMARY KEY (channel_id, batch_no)
+        );
       `);
 
       await client.query('COMMIT');
@@ -285,7 +365,8 @@ export class DbService {
         c.last_processed_message_id::TEXT, 
         c.status,
         COALESCE(COUNT(m.id), 0)::INTEGER as message_count,
-        (SELECT COUNT(*) FROM channel_mappings cm WHERE cm.channel_id = c.channel_id)::INTEGER as mapping_count
+        (SELECT COUNT(*) FROM channel_mappings cm WHERE cm.channel_id = c.channel_id)::INTEGER as mapping_count,
+        (SELECT COUNT(*) FROM channel_batches cb WHERE cb.channel_id = c.channel_id)::INTEGER as batch_count
       FROM telegram_channels c
       LEFT JOIN telegram_messages m ON c.channel_id = m.channel_id
       GROUP BY c.channel_id, c.channel_username, c.title, c.import_started_at, c.import_completed_at, c.last_processed_message_id, c.status
@@ -329,7 +410,8 @@ export class DbService {
         c.last_processed_message_id::TEXT,
         c.status,
         COALESCE(COUNT(m.id), 0)::INTEGER as message_count,
-        (SELECT COUNT(*) FROM channel_mappings cm WHERE cm.channel_id = c.channel_id)::INTEGER as mapping_count
+        (SELECT COUNT(*) FROM channel_mappings cm WHERE cm.channel_id = c.channel_id)::INTEGER as mapping_count,
+        (SELECT COUNT(*) FROM channel_batches cb WHERE cb.channel_id = c.channel_id)::INTEGER as batch_count
       FROM telegram_channels c
       LEFT JOIN telegram_messages m ON c.channel_id = m.channel_id
       ${whereSql}
@@ -385,12 +467,8 @@ export class DbService {
     const query = `
       SELECT
         message_id::TEXT,
-        COALESCE(
-          telegram_json->'media'->>'media_type' IN ('audio', 'voice')
-            OR telegram_json->'media'->>'mime_type' LIKE 'audio/%',
-          FALSE
-        ) AS is_audio,
-        COALESCE(telegram_json->>'text', '') ~ '\\S' AS has_text
+        ${IS_AUDIO_SQL} AS is_audio,
+        ${HAS_TEXT_SQL} AS has_text
       FROM telegram_messages
       WHERE channel_id = $1 AND message_id = ANY($2::bigint[]);
     `;
@@ -420,19 +498,7 @@ export class DbService {
         return null;
       }
       await client.query('DELETE FROM channel_mappings WHERE channel_id = $1', [channelId.toString()]);
-      if (mappings.length > 0) {
-        await client.query(
-          `INSERT INTO channel_mappings (channel_id, media_message_id, text_message_id, source)
-           SELECT $1::bigint, m.media_message_id, m.text_message_id, m.source
-           FROM unnest($2::bigint[], $3::bigint[], $4::text[]) AS m(media_message_id, text_message_id, source)`,
-          [
-            channelId.toString(),
-            mappings.map((m) => m.media_message_id),
-            mappings.map((m) => m.text_message_id),
-            mappings.map((m) => m.source)
-          ]
-        );
-      }
+      await this.insertMappings(client, channelId.toString(), mappings);
       const res = await client.query('SELECT NOW() AS updated_at');
       await client.query('COMMIT');
       return { count: mappings.length, updated_at: res.rows[0].updated_at };
@@ -446,17 +512,208 @@ export class DbService {
   }
 
   /**
+   * Replaces the mappings whose audio is inside one batch, and freezes that batch, in one transaction.
+   * `batch` is the range the caller validated against: a different stored range returns `conflict`,
+   * because a rebuild replaced the open batch in the meantime.
+   */
+  async replaceBatchMappings(
+    channelId: string | number | bigint,
+    batch: Pick<ChannelBatch, 'batch_no' | 'first_message_id' | 'last_message_id'>,
+    mappings: MappingInput[]
+  ): Promise<BatchMappingsResult> {
+    const id = channelId.toString();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query('SELECT channel_id FROM telegram_channels WHERE channel_id = $1 FOR UPDATE', [id]);
+      if (locked.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return { status: 'not_found' };
+      }
+      const stored = await client.query(
+        'SELECT first_message_id::TEXT, last_message_id::TEXT FROM channel_batches WHERE channel_id = $1 AND batch_no = $2',
+        [id, batch.batch_no]
+      );
+      if (stored.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return { status: 'not_found' };
+      }
+      const range = stored.rows[0];
+      if (range.first_message_id !== batch.first_message_id || range.last_message_id !== batch.last_message_id) {
+        await client.query('ROLLBACK');
+        return { status: 'conflict' };
+      }
+
+      await client.query(
+        'DELETE FROM channel_mappings WHERE channel_id = $1 AND media_message_id BETWEEN $2 AND $3',
+        [id, batch.first_message_id, batch.last_message_id]
+      );
+      await this.insertMappings(client, id, mappings);
+      await client.query(
+        "UPDATE channel_batches SET status = 'frozen', frozen_at = COALESCE(frozen_at, NOW()) WHERE channel_id = $1 AND batch_no = $2",
+        [id, batch.batch_no]
+      );
+      const res = await client.query('SELECT NOW() AS updated_at');
+      await client.query('COMMIT');
+      return { status: 'ok', count: mappings.length, updated_at: res.rows[0].updated_at };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error(`Failed to replace mappings of batch ${batch.batch_no} for channel ${id}`, error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Bulk-inserts mappings with one unnest insert. Runs inside the caller's transaction. */
+  private async insertMappings(client: PoolClient, channelId: string, mappings: MappingInput[]): Promise<void> {
+    if (mappings.length === 0) return;
+    await client.query(
+      `INSERT INTO channel_mappings (channel_id, media_message_id, text_message_id, source)
+       SELECT $1::bigint, m.media_message_id, m.text_message_id, m.source
+       FROM unnest($2::bigint[], $3::bigint[], $4::text[]) AS m(media_message_id, text_message_id, source)`,
+      [
+        channelId,
+        mappings.map((m) => m.media_message_id),
+        mappings.map((m) => m.text_message_id),
+        mappings.map((m) => m.source)
+      ]
+    );
+  }
+
+  /**
    * Retrieves the stored text↔audio mappings of a channel, ordered by audio message ID.
    */
   async getChannelMappings(channelId: string | number | bigint): Promise<ChannelMapping[]> {
     const query = `
       SELECT text_message_id::TEXT, media_message_id::TEXT, source, updated_at
-      FROM channel_mappings
-      WHERE channel_id = $1
-      ORDER BY media_message_id ASC;
+      FROM channel_mappings cm
+      WHERE cm.channel_id = $1
+      ORDER BY cm.media_message_id ASC;
     `;
     const res = await this.pool.query(query, [channelId.toString()]);
     return res.rows;
+  }
+
+  /**
+   * Rebuilds the open end of a channel's batches in one transaction, under the channel row lock.
+   * Freezes open batches that have a mapped audio, plans the messages after the last frozen batch
+   * with `plan`, then replaces the open batches with the result. Returns null when the channel is not tracked.
+   * See docs/batching.md.
+   */
+  async rebuildOpenBatches(
+    channelId: string | number | bigint,
+    plan: (input: TailPlanInput) => TailPlan
+  ): Promise<BatchRebuildResult | null> {
+    const id = channelId.toString();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const channelRes = await client.query(
+        'SELECT status, import_completed_at, batch_order FROM telegram_channels WHERE channel_id = $1 FOR UPDATE',
+        [id]
+      );
+      if (channelRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return null;
+      }
+      const channel = channelRes.rows[0];
+
+      // A person has started on an open batch with a mapping, so it must not change.
+      await client.query(
+        `UPDATE channel_batches b SET status = 'frozen', frozen_at = NOW()
+         WHERE b.channel_id = $1 AND b.status = 'open'
+           AND EXISTS (SELECT 1 FROM channel_mappings m
+                       WHERE m.channel_id = b.channel_id
+                         AND m.media_message_id BETWEEN b.first_message_id AND b.last_message_id)`,
+        [id]
+      );
+      const lastFrozenRes = await client.query(
+        `SELECT batch_no, last_message_id::TEXT FROM channel_batches
+         WHERE channel_id = $1 AND status = 'frozen' ORDER BY batch_no DESC LIMIT 1`,
+        [id]
+      );
+      const lastFrozen: { batch_no: number; last_message_id: string } | undefined = lastFrozenRes.rows[0];
+
+      const messages = await this.readBatchMessages(client, id, lastFrozen?.last_message_id ?? '0');
+      const result = plan({
+        messages,
+        storedOrder: toChannelOrder(channel.batch_order),
+        hasFrozenBatches: lastFrozen !== undefined,
+        completedAt: channel.status === 'completed' ? channel.import_completed_at : null,
+      });
+
+      await client.query("DELETE FROM channel_batches WHERE channel_id = $1 AND status = 'open'", [id]);
+      const firstNo = (lastFrozen?.batch_no ?? 0) + 1;
+      if (result.batches.length > 0) {
+        await client.query(
+          `INSERT INTO channel_batches
+             (channel_id, batch_no, first_message_id, last_message_id, message_count, audio_count, status, frozen_at)
+           SELECT $1::bigint, b.batch_no, b.first_message_id, b.last_message_id, b.message_count, b.audio_count, b.status,
+                  CASE WHEN b.status = 'frozen' THEN NOW() END
+           FROM unnest($2::int[], $3::bigint[], $4::bigint[], $5::int[], $6::int[], $7::text[])
+             AS b(batch_no, first_message_id, last_message_id, message_count, audio_count, status)`,
+          [
+            id,
+            result.batches.map((_, k) => firstNo + k),
+            result.batches.map((b) => b.first_message_id),
+            result.batches.map((b) => b.last_message_id),
+            result.batches.map((b) => b.message_count),
+            result.batches.map((b) => b.audio_count),
+            result.batches.map((b) => b.status),
+          ]
+        );
+      }
+      await client.query('UPDATE telegram_channels SET batch_order = $2 WHERE channel_id = $1', [id, result.order]);
+      await client.query('COMMIT');
+
+      return {
+        order: result.order,
+        batch_count: firstNo - 1 + result.batches.length,
+        open_count: result.batches.filter((b) => b.status === 'open').length,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error(`Failed to rebuild batches for channel ${id}`, error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Reads the messages after `afterMessageId` in message_id order, as the batch planner sees them. */
+  private async readBatchMessages(client: PoolClient, channelId: string, afterMessageId: string): Promise<BatchMessage[]> {
+    const res = await client.query(
+      `SELECT message_id::TEXT, message_date AS date, ${IS_AUDIO_SQL} AS is_audio, ${HAS_TEXT_SQL} AS has_text
+       FROM telegram_messages tm
+       WHERE tm.channel_id = $1 AND tm.message_id > $2
+       ORDER BY tm.message_id`,
+      [channelId, afterMessageId]
+    );
+    return res.rows;
+  }
+
+  /**
+   * Retrieves the stored channel order and all batches of a channel, ordered by batch number.
+   */
+  async getChannelBatches(
+    channelId: string | number | bigint
+  ): Promise<{ order: ChannelOrder | null; batches: ChannelBatch[] }> {
+    const id = channelId.toString();
+    const orderRes = await this.pool.query('SELECT batch_order FROM telegram_channels WHERE channel_id = $1', [id]);
+    const batchRes = await this.pool.query(`${BATCH_COLUMNS_SQL} WHERE b.channel_id = $1 ORDER BY b.batch_no`, [id]);
+    return { order: toChannelOrder(orderRes.rows[0]?.batch_order), batches: batchRes.rows };
+  }
+
+  /**
+   * Retrieves one batch of a channel by number, or null when it does not exist.
+   */
+  async getChannelBatch(channelId: string | number | bigint, batchNo: number): Promise<ChannelBatch | null> {
+    const res = await this.pool.query(`${BATCH_COLUMNS_SQL} WHERE b.channel_id = $1 AND b.batch_no = $2`, [
+      channelId.toString(),
+      batchNo,
+    ]);
+    return res.rows[0] ?? null;
   }
 
   /**
@@ -472,6 +729,7 @@ export class DbService {
         channelId.toString()
       ]);
       await client.query('DELETE FROM channel_mappings WHERE channel_id = $1', [channelId.toString()]);
+      await client.query('DELETE FROM channel_batches WHERE channel_id = $1', [channelId.toString()]);
       await client.query('DELETE FROM telegram_messages WHERE channel_id = $1', [channelId.toString()]);
       await client.query('DELETE FROM telegram_channels WHERE channel_id = $1', [channelId.toString()]);
       await client.query('COMMIT');
