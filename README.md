@@ -71,6 +71,7 @@ src/
   config.ts                 env parsing and validation
   importer.ts               scheduler + per-channel import loop
   server.ts                 Express API, auth, static dashboard
+  mappings.ts               PUT mappings body rules: ID parsing, limits, per-item problems
   logger.ts                 Winston
   services/
     telegram.service.ts     GramJS client, retry/FloodWait wrapper, media metadata

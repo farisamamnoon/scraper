@@ -27,6 +27,7 @@ npx jest tests/server.test.ts -t "DELETE"   # single file / test name
 | `src/config.ts` | Parses and validates env vars into a typed `Config`. Returns `{}` when `NODE_ENV=test`. |
 | `src/importer.ts` | Scheduler (5s tick, `IMPORT_CONCURRENCY` slots) and per-channel import loop: 100-message batches oldest→newest, media to S3, message upsert, progress checkpoint per batch. |
 | `src/server.ts` | `createServer(...)`: cookie auth, static `public/`, all `/api/*` routes, global error handler. |
+| `src/mappings.ts` | Pure request rules for `PUT …/mappings`: `parseTelegramId`, `parseMappingsBody`, item and body-size limits. |
 | `src/services/telegram.service.ts` | GramJS client, session handling, `executeWithRetry`, media metadata/filename derivation, media download. |
 | `src/services/db.service.ts` | `pg` pool wrapper. Schema DDL (`initializeSchema`), channel/message queries. |
 | `src/services/s3.service.ts` | Multipart streaming upload, object read stream, `ensureBucketExists` (currently not called). |
@@ -54,7 +55,7 @@ Path-scoped details load automatically from `.claude/rules/` when you touch the 
 
 - New service: `src/services/<name>.service.ts` class → construct in `index.ts` → inject → add a `jest.fn()` mock in the tests that need it.
 - New endpoint: add inside `createServer()`, protect with `apiAuthMiddleware`, wrap the handler body in `try { … } catch (err) { next(err) }`, validate input with `express-validator` + `handleValidationErrors`, respond `{ success, … }`, add supertest coverage in `tests/server.test.ts`.
-  - Exception: the body of `PUT /api/channels/:channelId/mappings` is checked by hand in `parseMappingsBody`. The check is all-or-nothing over up to 50,000 items, reports per-item `details`, and ends in one set-based DB lookup, which `express-validator` chains don't fit. Its `:channelId` param still uses `express-validator`. Don't copy this for other endpoints.
+  - Exception: the body of `PUT /api/channels/:channelId/mappings` is checked by hand in `parseMappingsBody` (`src/mappings.ts`). The check is all-or-nothing over up to 50,000 items, reports per-item `details`, and ends in one set-based DB lookup, which `express-validator` chains don't fit. Its `:channelId` param still uses `express-validator`. Don't copy this for other endpoints.
 - New DB query: typed `DbService` method with a JSDoc line. Update `ChannelProgress` or add an interface for new shapes.
 - Logging: `logger.info` lifecycle, `logger.warn` recoverable (FloodWait, retries, resets), `logger.error(msg, err)` with the error as the second argument, `logger.debug` internals (keys, temp paths).
 - Errors inside a message loop are logged and the loop continues; errors that abort a channel mark it `failed`.
