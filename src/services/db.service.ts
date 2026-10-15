@@ -587,9 +587,9 @@ export class DbService {
   async getChannelMappings(channelId: string | number | bigint): Promise<ChannelMapping[]> {
     const query = `
       SELECT text_message_id::TEXT, media_message_id::TEXT, source, updated_at
-      FROM channel_mappings
-      WHERE channel_id = $1
-      ORDER BY media_message_id ASC;
+      FROM channel_mappings cm
+      WHERE cm.channel_id = $1
+      ORDER BY cm.media_message_id ASC;
     `;
     const res = await this.pool.query(query, [channelId.toString()]);
     return res.rows;
@@ -685,9 +685,9 @@ export class DbService {
   private async readBatchMessages(client: PoolClient, channelId: string, afterMessageId: string): Promise<BatchMessage[]> {
     const res = await client.query(
       `SELECT message_id::TEXT, message_date AS date, ${IS_AUDIO_SQL} AS is_audio, ${HAS_TEXT_SQL} AS has_text
-       FROM telegram_messages
-       WHERE channel_id = $1 AND message_id > $2
-       ORDER BY message_id`,
+       FROM telegram_messages tm
+       WHERE tm.channel_id = $1 AND tm.message_id > $2
+       ORDER BY tm.message_id`,
       [channelId, afterMessageId]
     );
     return res.rows;

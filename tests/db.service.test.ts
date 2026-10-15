@@ -225,6 +225,18 @@ describe('DbService', () => {
       expect(mockClient.release).toHaveBeenCalledTimes(1);
     });
 
+    it('reads the tail in numeric message order', async () => {
+      mockClient.query.mockImplementation(
+        rebuildQueries({ status: 'completed', import_completed_at: completedAt, batch_order: null }, null)
+      );
+
+      await dbService.rebuildOpenBatches('123', jest.fn().mockReturnValue({ order: 'audio_first', batches: [] }));
+
+      // The output column is message_id::TEXT; an unqualified ORDER BY message_id would sort it as text ('10' < '9').
+      const readSql = clientSql()[stepOf('SELECT message_id::TEXT')];
+      expect(readSql).toMatch(/ORDER BY tm\.message_id$/);
+    });
+
     it('passes completedAt null when the channel is not completed', async () => {
       mockClient.query.mockImplementation(
         rebuildQueries({ status: 'running', import_completed_at: completedAt, batch_order: null }, null)
@@ -320,6 +332,15 @@ describe('DbService', () => {
 
       expect(clientSql()).toEqual(['BEGIN', lockSql, batchSql, 'ROLLBACK']);
       expect(mockClient.release).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('getChannelMappings', () => {
+    it('orders by the numeric audio message ID', async () => {
+      await dbService.getChannelMappings('123');
+
+      // The output column is media_message_id::TEXT; an unqualified ORDER BY would sort it as text.
+      expect(String(mockPool.query.mock.calls[0][0])).toContain('ORDER BY cm.media_message_id ASC');
     });
   });
 
