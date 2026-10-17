@@ -30,6 +30,7 @@ scripts/test-db.sh help    # real-data test DB + offline API for end-to-end test
 | `src/batching.ts` | Pure batch planner for Stage 2: learns the channel order, cuts messages into 10–50 message batches, decides `open`/`frozen`. Rules in `docs/batching.md`. |
 | `src/server.ts` | `createServer(...)`: cookie auth, static `public/`, all `/api/*` routes, global error handler. |
 | `src/mappings.ts` | Pure request rules for `PUT …/mappings`: `parseTelegramId`, `parseMappingsBody`, `parseDeletedBody` (the batch PUT `deleted` list), item and body-size limits. |
+| `src/eval-fixtures.ts` | Pure builder of the eval fixture the mapper UI's harness reads. Used by `scripts/export-eval-fixtures.ts` (`docs/pipeline.md`, Eval fixture export). |
 | `src/services/telegram.service.ts` | GramJS client, session handling, `executeWithRetry`, media metadata/filename derivation, media download. |
 | `src/services/db.service.ts` | `pg` pool wrapper. Schema DDL (`initializeSchema`), channel/message queries. |
 | `src/services/s3.service.ts` | Multipart streaming upload, object read stream, `ensureBucketExists` (currently not called). |

@@ -53,6 +53,19 @@ Later stages read these parts of the scraper, so treat each one as a contract. I
 - **IDs**: channel and message IDs are BigInt values, and the API sends them as JSON strings.
 - **HTTP API**: the request and response shapes in [api.md](api.md), including the `{ success, … }` envelope and the error codes.
 
+## Eval fixture export
+
+The mapper UI has an offline harness that scores its pair detection against human-saved pairs. `scripts/export-eval-fixtures.ts` builds the data for it from the stored `channel_mappings`. The shape is the UI's `EvalFixtureSchema` (`lib/automation/eval-fixture.ts` in the UI repo): `{ version: 1, source, batches[] }`. Each batch holds the channel handle and ID, the batch number, the stored `batch_order` as `order` (`legacyOrder` is always `null`), the messages of the range oldest first, the closest earlier text (`contextMessage`), the texts outside the range that the pairs use (`linkedMessages`), and `expected` (audio ID to text ID, only for mapped audio). Message IDs are strings. A message is in the file when it is audio or has text. The date is `telegram_json.date` (ISO, UTC).
+
+```bash
+npx ts-node scripts/export-eval-fixtures.ts --channel <handle> [--batches 1,2] --out <path> [--no-ssl]
+```
+
+- The script only reads (`SELECT`). It takes `POSTGRES_*` from the environment (`.env` is loaded). Postgres TLS is on as in `src/index.ts`; `--no-ssl` turns it off for a local container.
+- `--out` is required and there is no default path. The script refuses to write a file over 1,000,000 bytes and writes nothing then. It skips batches that have no mappings.
+- **Deleted messages are excluded.** A message deleted as audio is not audio in the export, a message deleted as text has no text, and a message with neither side left is dropped. A mapping that uses a deleted audio or a deleted text is not exported as a label. A text outside the range that was deleted in another batch is not checked (the known gap of [deletions](#data-other-stages-depend-on)).
+- **Privacy:** the file holds real channel message text. Keep it out of git and out of public places. The file is created with mode `0600`.
+
 ## Open decisions about the pipeline
 
 Three pipeline decisions are still open, and [status.md](status.md#open-questions) tracks them:
