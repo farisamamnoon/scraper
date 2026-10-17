@@ -927,6 +927,7 @@ describe('Express API Server Endpoints', () => {
       message_count: 20,
       audio_count: 10,
       mapped_audio_count: 0,
+      deleted_audio_count: 2,
       status: 'open',
       first_date: new Date('2024-01-01T00:00:00.000Z'),
       last_date: new Date('2024-01-01T01:00:00.000Z'),
@@ -952,16 +953,29 @@ describe('Express API Server Endpoints', () => {
         messages: [row('60'), row('41')],
         context_message: row('39'),
         linked_messages: [row('5')],
+        deleted: [
+          { message_id: '41', role: 'audio' },
+          { message_id: '60', role: 'text' },
+        ],
       } as any);
 
       const response = await request(app).get(path).set('Cookie', authCookie).expect(200);
 
       expect(response.body.success).toBe(true);
       expect(response.body.channel_id).toBe('123');
-      expect(response.body.batch).toMatchObject({ batch_no: 2, first_message_id: '41', last_message_id: '80' });
+      expect(response.body.batch).toMatchObject({
+        batch_no: 2,
+        first_message_id: '41',
+        last_message_id: '80',
+        deleted_audio_count: 2,
+      });
       expect(response.body.messages.map((m: any) => m.message_id)).toEqual(['60', '41']);
       expect(response.body.context_message.message_id).toBe('39');
       expect(response.body.linked_messages.map((m: any) => m.message_id)).toEqual(['5']);
+      expect(response.body.deleted).toEqual([
+        { message_id: '41', role: 'audio' },
+        { message_id: '60', role: 'text' },
+      ]);
       expect(mockDbService.getChannelBatch).toHaveBeenCalledWith('123', 2);
       expect(mockDbService.getBatchMessages).toHaveBeenCalledWith('123', storedBatch);
     });
@@ -971,10 +985,12 @@ describe('Express API Server Endpoints', () => {
         messages: [],
         context_message: null,
         linked_messages: [],
+        deleted: [],
       });
 
       const response = await request(app).get(path).set('Cookie', authCookie).expect(200);
 
+      expect(response.body.deleted).toEqual([]);
       expect(response.body.messages).toEqual([]);
       expect(response.body.context_message).toBeNull();
       expect(response.body.linked_messages).toEqual([]);
@@ -1114,9 +1130,13 @@ describe('Express API Server Endpoints', () => {
         updated_at: updatedAt.toISOString(),
       });
       expect(mockDbService.getChannelBatch).toHaveBeenCalledWith('123', 2);
-      expect(mockDbService.replaceBatchMappings).toHaveBeenCalledWith('123', storedBatch, [
-        { text_message_id: '5', media_message_id: '50', source: 'manual' },
-      ]);
+      // No `deleted` in the body: undefined tells the write to leave the stored deletions alone.
+      expect(mockDbService.replaceBatchMappings).toHaveBeenCalledWith(
+        '123',
+        storedBatch,
+        [{ text_message_id: '5', media_message_id: '50', source: 'manual' }],
+        undefined
+      );
     });
 
     it('accepts a text outside the batch range', async () => {
@@ -1214,6 +1234,200 @@ describe('Express API Server Endpoints', () => {
       mockDbService.replaceBatchMappings.mockRejectedValue(new Error('deadlock'));
 
       await request(app).put(path).set('Cookie', authCookie).send({ mappings: [] }).expect(500);
+    });
+
+    describe('deleted', () => {
+      // 5: text before the batch. 45: text in the batch. 50, 52: audio. 60: audio with caption. 90: audio after the batch.
+      const stored: Record<string, { is_audio: boolean; has_text: boolean }> = {
+        '5': { is_audio: false, has_text: true },
+        '45': { is_audio: false, has_text: true },
+        '50': { is_audio: true, has_text: false },
+        '52': { is_audio: true, has_text: false },
+        '60': { is_audio: true, has_text: true },
+        '90': { is_audio: true, has_text: false },
+      };
+
+      beforeEach(() => {
+        mockDbService.getMappableMessageInfo.mockImplementation(async (_channelId, ids) =>
+          ids.filter((id) => stored[id]).map((id) => ({ message_id: id, ...stored[id] }))
+        );
+        mockDbService.replaceBatchMappings.mockImplementation(async (_channelId, _batch, mappings, deleted) => ({
+          status: 'ok',
+          count: mappings.length,
+          ...(deleted ? { deleted_count: deleted.length } : {}),
+          updated_at: updatedAt,
+        }));
+      });
+
+      const put = (body: any) => request(app).put(path).set('Cookie', authCookie).send(body);
+
+      it('stores the deletions with the mappings and returns deleted_count', async () => {
+        const response = await put({
+          mappings: [{ text_message_id: '5', media_message_id: '50', source: 'manual' }],
+          deleted: [
+            { message_id: '52', role: 'audio' },
+            { message_id: 45, role: 'text' },
+            { message_id: '60', role: 'audio' },
+            { message_id: '60', role: 'text' },
+          ],
+        }).expect(200);
+
+        expect(response.body).toEqual({
+          success: true,
+          channel_id: '123',
+          batch_no: 2,
+          count: 1,
+          deleted_count: 4,
+          updated_at: updatedAt.toISOString(),
+        });
+        expect(mockDbService.replaceBatchMappings).toHaveBeenCalledWith(
+          '123',
+          storedBatch,
+          [{ text_message_id: '5', media_message_id: '50', source: 'manual' }],
+          [
+            { message_id: '52', role: 'audio' },
+            { message_id: '45', role: 'text' },
+            { message_id: '60', role: 'audio' },
+            { message_id: '60', role: 'text' },
+          ]
+        );
+      });
+
+      it('passes an empty array through, to clear the deletions', async () => {
+        const response = await put({ mappings: [], deleted: [] }).expect(200);
+
+        expect(response.body.deleted_count).toBe(0);
+        expect(mockDbService.replaceBatchMappings).toHaveBeenCalledWith('123', storedBatch, [], []);
+      });
+
+      it('leaves the deletions alone when deleted is absent', async () => {
+        const response = await put({ mappings: [] }).expect(200);
+
+        expect(response.body).not.toHaveProperty('deleted_count');
+        expect(mockDbService.replaceBatchMappings).toHaveBeenCalledWith('123', storedBatch, [], undefined);
+      });
+
+      it('looks up mappings and deletions in one query', async () => {
+        await put({
+          mappings: [{ text_message_id: '5', media_message_id: '50' }],
+          deleted: [{ message_id: '52', role: 'audio' }],
+        }).expect(200);
+
+        expect(mockDbService.getMappableMessageInfo).toHaveBeenCalledTimes(1);
+        expect(mockDbService.getMappableMessageInfo.mock.calls[0][1].sort()).toEqual(['5', '50', '52']);
+      });
+
+      const reject = async (deleted: any, mappings: any[] = []) => {
+        const response = await put({ mappings, deleted }).expect(400);
+        expect(response.body.success).toBe(false);
+        expect(mockDbService.replaceBatchMappings).not.toHaveBeenCalled();
+        return response.body;
+      };
+
+      it.each([
+        ['null', null],
+        ['an object', {}],
+        ['a string', 'x'],
+      ])('rejects deleted that is %s', async (_name, deleted) => {
+        const body = await reject(deleted);
+        expect(body.error).toBe('deleted must be an array.');
+        expect(body.details).toEqual([{ field: 'deleted', reason: 'must be an array.' }]);
+      });
+
+      it('rejects an item that is not an object', async () => {
+        const body = await reject(['52']);
+        expect(body.error).toBe('deleted[0] must be an object.');
+        expect(body.details).toEqual([{ list: 'deleted', index: 0, field: 'deleted', reason: 'must be an object.' }]);
+      });
+
+      it.each([['0'], ['-5'], ['abc'], ['9223372036854775808'], [1.5], [null], [undefined]])(
+        'rejects message_id %p',
+        async (messageId) => {
+          const body = await reject([{ message_id: messageId, role: 'audio' }]);
+          expect(body.error).toBe('deleted[0].message_id must be a positive integer message ID.');
+          expect(body.details).toEqual([
+            { list: 'deleted', index: 0, field: 'message_id', reason: 'must be a positive integer message ID.' },
+          ]);
+        }
+      );
+
+      it.each([['video'], [''], [null], [undefined], ['AUDIO']])('rejects role %p', async (role) => {
+        const body = await reject([{ message_id: '52', role }]);
+        expect(body.error).toBe('deleted[0].role must be one of: audio, text.');
+      });
+
+      it('rejects a duplicate message_id and role pair', async () => {
+        const body = await reject([
+          { message_id: '52', role: 'audio' },
+          { message_id: 52, role: 'audio' },
+        ]);
+        expect(body.error).toBe('deleted[1].message_id duplicate of index 0; each message and role can be deleted once.');
+      });
+
+      it('rejects a message outside the batch range', async () => {
+        const audio = await reject([{ message_id: '90', role: 'audio' }]);
+        expect(audio.error).toBe('deleted[0].message_id is not in batch 2.');
+        const text = await reject([{ message_id: '5', role: 'text' }]);
+        expect(text.error).toBe('deleted[0].message_id is not in batch 2.');
+      });
+
+      it('rejects a message that is not stored', async () => {
+        const body = await reject([{ message_id: '70', role: 'audio' }]);
+        expect(body.error).toBe('deleted[0].message_id is not a stored message of this channel.');
+      });
+
+      it('rejects a deleted audio that is not audio', async () => {
+        const body = await reject([{ message_id: '45', role: 'audio' }]);
+        expect(body.error).toBe('deleted[0].message_id is not an audio or voice message.');
+      });
+
+      it('rejects a deleted text that has no text', async () => {
+        const body = await reject([{ message_id: '50', role: 'text' }]);
+        expect(body.error).toBe('deleted[0].message_id has no text.');
+      });
+
+      it('rejects a deleted audio that a mapping in the same body uses', async () => {
+        const body = await reject(
+          [{ message_id: '50', role: 'audio' }],
+          [{ text_message_id: '5', media_message_id: '50' }]
+        );
+        expect(body.error).toBe('deleted[0].message_id is the audio of mappings[0]; a deleted audio cannot be mapped.');
+      });
+
+      it('rejects a deleted text that a mapping in the same body uses', async () => {
+        const body = await reject(
+          [{ message_id: '45', role: 'text' }],
+          [{ text_message_id: '45', media_message_id: '50' }]
+        );
+        expect(body.error).toBe('deleted[0].message_id is the text of mappings[0]; a deleted text cannot be mapped.');
+      });
+
+      it('accepts a deleted text whose audio is deleted too, and an audio that is the text of nothing', async () => {
+        await put({
+          mappings: [{ text_message_id: '60', media_message_id: '50' }],
+          deleted: [{ message_id: '60', role: 'audio' }],
+        }).expect(200);
+      });
+
+      it('reports every problem in details, up to 20', async () => {
+        const deleted = Array.from({ length: 25 }, (_, i) => ({ message_id: '0', role: 'audio', i }));
+        const body = await reject(deleted);
+        expect(body.details).toHaveLength(20);
+      });
+
+      it('rejects mapping problems and deleted problems together', async () => {
+        const body = await reject([{ message_id: '52', role: 'x' }], [{ text_message_id: 'a', media_message_id: '50' }]);
+        expect(body.details.map((d: any) => d.field)).toEqual(['text_message_id', 'role']);
+      });
+
+      it('returns 409 and 404 from the write as before', async () => {
+        mockDbService.replaceBatchMappings.mockResolvedValue({ status: 'conflict' });
+        const conflict = await put({ mappings: [], deleted: [] }).expect(409);
+        expect(conflict.body).toEqual({ success: false, error: 'Batch changed while saving. Load it again.' });
+
+        mockDbService.replaceBatchMappings.mockResolvedValue({ status: 'not_found' });
+        await put({ mappings: [], deleted: [] }).expect(404);
+      });
     });
   });
 });

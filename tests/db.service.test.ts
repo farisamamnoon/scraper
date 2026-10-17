@@ -43,10 +43,20 @@ describe('DbService', () => {
       expect(sql).toContain('PRIMARY KEY (channel_id, batch_no)');
       expect(sql).toContain('ALTER TABLE telegram_channels ADD COLUMN IF NOT EXISTS batch_order TEXT');
     });
+
+    it('should create channel_deletions with role check and a message-ordered primary key', async () => {
+      await dbService.initializeSchema();
+
+      const sql = clientSql().join('\n');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS channel_deletions');
+      expect(sql).toContain("CHECK (role IN ('audio', 'text'))");
+      expect(sql).toContain('deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()');
+      expect(sql).toContain('PRIMARY KEY (channel_id, message_id, role)');
+    });
   });
 
   describe('deleteChannel', () => {
-    it('should lock the channel row, then delete mappings, messages and the channel in one transaction', async () => {
+    it('should lock the channel row, then delete mappings, deletions, messages and the channel in one transaction', async () => {
       await dbService.deleteChannel('123456789');
 
       // The lock comes first, so a mapping replace cannot add rows after the mappings DELETE.
@@ -54,6 +64,7 @@ describe('DbService', () => {
         'BEGIN',
         'SELECT channel_id FROM telegram_channels WHERE channel_id = $1 FOR UPDATE',
         'DELETE FROM channel_mappings WHERE channel_id = $1',
+        'DELETE FROM channel_deletions WHERE channel_id = $1',
         'DELETE FROM channel_batches WHERE channel_id = $1',
         'DELETE FROM telegram_messages WHERE channel_id = $1',
         'DELETE FROM telegram_channels WHERE channel_id = $1',
@@ -314,6 +325,81 @@ describe('DbService', () => {
       expect(mockClient.release).toHaveBeenCalledTimes(1);
     });
 
+    describe('with deleted', () => {
+      const deleteSql = `DELETE FROM channel_deletions d
+         WHERE d.channel_id = $1 AND d.message_id BETWEEN $2 AND $3
+           AND NOT EXISTS (SELECT 1 FROM unnest($4::bigint[], $5::text[]) AS k(message_id, role)
+                           WHERE k.message_id = d.message_id AND k.role = d.role)`;
+      const norm = (sql: string) => sql.replace(/\s+/g, ' ');
+      const deleted = [
+        { message_id: '52', role: 'audio' as const },
+        { message_id: '45', role: 'text' as const },
+      ];
+
+      beforeEach(() => {
+        mockClient.query.mockImplementation(batchQueries(true, { first_message_id: '41', last_message_id: '80' }));
+      });
+
+      it('replaces the deletions of the range in the same transaction, before freezing', async () => {
+        const result = await dbService.replaceBatchMappings('123', batch, mappings, deleted);
+
+        expect(result).toEqual({ status: 'ok', count: 1, deleted_count: 2, updated_at: now });
+        const sql = clientSql().map(norm);
+        expect(sql.slice(0, 4)).toEqual(['BEGIN', lockSql, batchSql, expect.stringContaining('DELETE FROM channel_mappings')]);
+        expect(sql[5]).toBe(norm(deleteSql));
+        expect(mockClient.query.mock.calls[5][1]).toEqual(['123', '41', '80', ['52', '45'], ['audio', 'text']]);
+        expect(sql[6]).toContain('INSERT INTO channel_deletions (channel_id, message_id, role)');
+        expect(sql[6]).toContain('unnest($2::bigint[], $3::text[])');
+        expect(sql[6]).toContain('ON CONFLICT DO NOTHING');
+        expect(mockClient.query.mock.calls[6][1]).toEqual(['123', ['52', '45'], ['audio', 'text']]);
+        expect(sql[7]).toContain("UPDATE channel_batches SET status = 'frozen'");
+        expect(sql[sql.length - 1]).toBe('COMMIT');
+      });
+
+      it('clears the range for an empty array and skips the insert', async () => {
+        const result = await dbService.replaceBatchMappings('123', batch, [], []);
+
+        expect(result).toEqual({ status: 'ok', count: 0, deleted_count: 0, updated_at: now });
+        const sql = clientSql().map(norm);
+        expect(sql).toContain(norm(deleteSql));
+        expect(sql.some((s) => s.includes('INSERT INTO channel_deletions'))).toBe(false);
+        expect(mockClient.query.mock.calls.find(([s]) => norm(String(s)) === norm(deleteSql))![1]).toEqual([
+          '123',
+          '41',
+          '80',
+          [],
+          [],
+        ]);
+      });
+
+      it('does not touch channel_deletions when deleted is undefined', async () => {
+        const result = await dbService.replaceBatchMappings('123', batch, mappings);
+
+        expect(result).toEqual({ status: 'ok', count: 1, updated_at: now });
+        expect(clientSql().some((s) => s.includes('channel_deletions'))).toBe(false);
+      });
+
+      it('writes nothing on conflict', async () => {
+        mockClient.query.mockImplementation(batchQueries(true, { first_message_id: '41', last_message_id: '90' }));
+
+        await expect(dbService.replaceBatchMappings('123', batch, mappings, deleted)).resolves.toEqual({
+          status: 'conflict',
+        });
+        expect(clientSql().some((s) => s.includes('channel_deletions'))).toBe(false);
+      });
+
+      it('rolls back when the insert fails', async () => {
+        mockClient.query.mockImplementation(async (sql: string) => {
+          if (sql.includes('INSERT INTO channel_deletions')) throw new Error('boom');
+          return batchQueries(true, { first_message_id: '41', last_message_id: '80' })(sql);
+        });
+
+        await expect(dbService.replaceBatchMappings('123', batch, mappings, deleted)).rejects.toThrow('boom');
+        expect(clientSql()[clientSql().length - 1]).toBe('ROLLBACK');
+        expect(mockClient.release).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it('returns not_found for an untracked channel or a missing batch', async () => {
       mockClient.query.mockImplementation(batchQueries(false, null));
       await expect(dbService.replaceBatchMappings('123', batch, mappings)).resolves.toEqual({ status: 'not_found' });
@@ -355,6 +441,9 @@ describe('DbService', () => {
       expect(result).toEqual({ order: 'text_first', batches: [{ batch_no: 1 }] });
       const batchSql = String(mockPool.query.mock.calls[1][0]);
       expect(batchSql).toContain('mapped_audio_count');
+      expect(batchSql).toContain('deleted_audio_count');
+      expect(batchSql).toContain("d.role = 'audio'");
+      expect(batchSql).toContain('d.message_id BETWEEN b.first_message_id AND b.last_message_id');
       expect(batchSql).toContain('BETWEEN b.first_message_id AND b.last_message_id');
       expect(batchSql).toContain('ORDER BY b.batch_no');
       expect(mockPool.query.mock.calls[1][1]).toEqual(['123']);
@@ -385,7 +474,8 @@ describe('DbService', () => {
       mockPool.query
         .mockResolvedValueOnce({ rows: [row('60'), row('41')] })
         .mockResolvedValueOnce({ rows: [row('39')] })
-        .mockResolvedValueOnce({ rows: [row('5')] });
+        .mockResolvedValueOnce({ rows: [row('5')] })
+        .mockResolvedValueOnce({ rows: [{ message_id: '41', role: 'audio' }] });
 
       const result = await dbService.getBatchMessages('123', batch);
 
@@ -393,8 +483,9 @@ describe('DbService', () => {
         messages: [row('60'), row('41')],
         context_message: row('39'),
         linked_messages: [row('5')],
+        deleted: [{ message_id: '41', role: 'audio' }],
       });
-      expect(mockPool.query).toHaveBeenCalledTimes(3);
+      expect(mockPool.query).toHaveBeenCalledTimes(4);
       const [rangeSql, rangeParams] = mockPool.query.mock.calls[0];
       expect(rangeSql).toContain('message_id BETWEEN $2::bigint AND $3::bigint');
       // The output column message_id is TEXT; an unqualified ORDER BY would sort it as text ('999' > '1675').
@@ -419,6 +510,21 @@ describe('DbService', () => {
       expect(linkedSql).toContain('cm.text_message_id NOT BETWEEN $2::bigint AND $3::bigint');
       expect(linkedSql).toContain('ORDER BY telegram_messages.message_date DESC, telegram_messages.message_id DESC');
       expect(linkedParams).toEqual(['123', '41', '80']);
+
+      // Stored deletions in range, in numeric message order (the output column is TEXT).
+      const [deletedSql, deletedParams] = mockPool.query.mock.calls[3];
+      expect(deletedSql).toContain('FROM channel_deletions');
+      expect(deletedSql).toContain('message_id BETWEEN $2::bigint AND $3::bigint');
+      expect(deletedSql).toContain('ORDER BY channel_deletions.message_id, channel_deletions.role');
+      expect(deletedParams).toEqual(['123', '41', '80']);
+    });
+
+    it('returns no deletions when none are stored', async () => {
+      mockPool.query.mockResolvedValue({ rows: [] });
+
+      const result = await dbService.getBatchMessages('123', batch);
+
+      expect(result.deleted).toEqual([]);
     });
 
     it('returns a null context message when no earlier text exists', async () => {

@@ -3,7 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { matchedData, param, query, validationResult } from 'express-validator';
 import { DbService } from './services/db.service';
-import type { ChannelProgress, ChannelStatus, MappingInput } from './services/db.service';
+import type { ChannelProgress, ChannelStatus, DeletionInput, MappingInput } from './services/db.service';
 import { Importer } from './importer';
 import { TelegramService } from './services/telegram.service';
 import { S3Service } from './services/s3.service';
@@ -12,6 +12,7 @@ import {
   MAPPINGS_BODY_LIMIT,
   MAX_MAPPING_PROBLEMS,
   describeMappingProblem,
+  parseDeletedBody,
   parseMappingsBody,
   parseTelegramId
 } from './mappings';
@@ -463,19 +464,21 @@ export function createServer(
 
   /**
    * Adds a problem for each mapping whose audio is not a stored audio message or whose text is not a
-   * stored message with text. One set-based query for the whole set.
+   * stored message with text, and the same for each deletion by its role. One set-based query for the whole set.
    */
   const checkStoredMessages = async (
     channelId: string,
     mappings: MappingInput[],
-    problems: MappingProblem[]
+    problems: MappingProblem[],
+    deleted: DeletionInput[] = []
   ): Promise<void> => {
-    if (mappings.length === 0) return;
+    if (mappings.length === 0 && deleted.length === 0) return;
     const messageIds = new Set<string>();
     mappings.forEach((mapping) => {
       messageIds.add(mapping.text_message_id);
       messageIds.add(mapping.media_message_id);
     });
+    deleted.forEach((item) => messageIds.add(item.message_id));
     const messageInfo = await dbService.getMappableMessageInfo(channelId, [...messageIds]);
     const messagesById = new Map(messageInfo.map((row) => [row.message_id, row]));
 
@@ -491,6 +494,17 @@ export function createServer(
         problems.push({ index, field: 'text_message_id', reason: 'is not a stored message of this channel.' });
       } else if (!text.has_text) {
         problems.push({ index, field: 'text_message_id', reason: 'has no text.' });
+      }
+    });
+
+    deleted.forEach((item, index) => {
+      const message = messagesById.get(item.message_id);
+      if (!message) {
+        problems.push({ list: 'deleted', index, field: 'message_id', reason: 'is not a stored message of this channel.' });
+      } else if (item.role === 'audio' && !message.is_audio) {
+        problems.push({ list: 'deleted', index, field: 'message_id', reason: 'is not an audio or voice message.' });
+      } else if (item.role === 'text' && !message.has_text) {
+        problems.push({ list: 'deleted', index, field: 'message_id', reason: 'has no text.' });
       }
     });
   };
@@ -597,7 +611,8 @@ export function createServer(
   /**
    * GET /api/channels/:channelId/batches/:batchNo/messages
    * Returns one batch with its stored messages (newest first, the same rows as GET …/messages), the closest
-   * earlier text message as context, and the texts outside the range that stored mappings of its audio use.
+   * earlier text message as context, the texts outside the range that stored mappings of its audio use, and the
+   * stored soft deletions inside the range.
    */
   app.get(
     BATCH_MESSAGES_PATH,
@@ -616,8 +631,8 @@ export function createServer(
           return;
         }
 
-        const { messages, context_message, linked_messages } = await dbService.getBatchMessages(channelId, batch);
-        res.json({ success: true, channel_id: channelId, batch, messages, context_message, linked_messages });
+        const { messages, context_message, linked_messages, deleted } = await dbService.getBatchMessages(channelId, batch);
+        res.json({ success: true, channel_id: channelId, batch, messages, context_message, linked_messages, deleted });
       } catch (err) {
         next(err);
       }
@@ -663,6 +678,8 @@ export function createServer(
   /**
    * PUT /api/channels/:channelId/batches/:batchNo/mappings
    * Replaces the mappings whose audio is in one batch, and freezes the batch. The text can be in any batch.
+   * An optional `deleted` list ({ message_id, role }) replaces the batch's soft deletions in the same transaction;
+   * when it is absent the deletions stay as they are.
    * All-or-nothing, with the same item checks as PUT /api/channels/:channelId/mappings.
    */
   app.put(
@@ -687,6 +704,9 @@ export function createServer(
         }
 
         const { mappings, problems } = parseMappingsBody(req.body);
+        const parsedDeleted = parseDeletedBody(req.body, mappings);
+        const deleted = parsedDeleted.deleted;
+        problems.push(...parsedDeleted.problems);
         if (problems.length === 0) {
           const first = BigInt(batch.first_message_id);
           const last = BigInt(batch.last_message_id);
@@ -696,8 +716,14 @@ export function createServer(
               problems.push({ index, field: 'media_message_id', reason: `is not in batch ${batchNo}.` });
             }
           });
+          (deleted ?? []).forEach((item, index) => {
+            const messageId = BigInt(item.message_id);
+            if (messageId < first || messageId > last) {
+              problems.push({ list: 'deleted', index, field: 'message_id', reason: `is not in batch ${batchNo}.` });
+            }
+          });
         }
-        if (problems.length === 0) await checkStoredMessages(channelId, mappings, problems);
+        if (problems.length === 0) await checkStoredMessages(channelId, mappings, problems, deleted);
 
         if (problems.length > 0) {
           res.status(400).json({
@@ -709,7 +735,7 @@ export function createServer(
         }
 
         // A rebuild can replace an open batch after the read above. The write checks the range again under a lock.
-        const result = await dbService.replaceBatchMappings(channelId, batch, mappings);
+        const result = await dbService.replaceBatchMappings(channelId, batch, mappings, deleted);
         if (result.status === 'not_found') {
           res.status(404).json({ success: false, error: 'Batch not found.' });
           return;
@@ -719,7 +745,7 @@ export function createServer(
           return;
         }
         logger.info(
-          `REST API: Stored ${result.count} mappings for batch ${batchNo} of channel @${channel.channel_username || channelId}.`
+          `REST API: Stored ${result.count} mappings${deleted ? ` and ${result.deleted_count ?? 0} deletions` : ''} for batch ${batchNo} of channel @${channel.channel_username || channelId}.`
         );
 
         res.json({
@@ -727,6 +753,7 @@ export function createServer(
           channel_id: channelId,
           batch_no: batchNo,
           count: result.count,
+          ...(result.deleted_count !== undefined ? { deleted_count: result.deleted_count } : {}),
           updated_at: result.updated_at
         });
       } catch (err) {
