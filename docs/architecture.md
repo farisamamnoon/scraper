@@ -117,6 +117,18 @@ Text↔audio pairs written by the mapper UI through `PUT /api/channels/:channelI
 
 A PUT replaces the channel's whole set in one transaction: it locks the channel row with `SELECT … FOR UPDATE`, then runs `DELETE` plus one bulk `INSERT … SELECT FROM unnest(…)`. The lock makes overlapping PUTs for one channel run one after the other, so the last write wins instead of failing on the primary key. The IDs refer to `telegram_messages.message_id` of the same channel. The API checks that at write time.
 
+### `channel_deletions`
+
+Soft deletions from the mapper: a message that does not need processing, for one role. Written with a batch save through `PUT /api/channels/:channelId/batches/:batchNo/mappings` (see [api.md](api.md#deletions)).
+
+| Column | Type | Notes |
+|---|---|---|
+| `channel_id`, `message_id` | `BIGINT` | Part of the `PRIMARY KEY`. The key starts with the channel and message, so range reads by message ID use it |
+| `role` | `TEXT` | `PRIMARY KEY` part, `CHECK` in `audio`, `text`. A captioned audio can have both |
+| `deleted_at` | `TIMESTAMPTZ` | Default `NOW()`. Kept when a later save leaves the row in place |
+
+A batch save with a `deleted` list runs inside the batch transaction: `DELETE` of the rows in the batch range that are not in the list, then one `INSERT … SELECT FROM unnest(…) ON CONFLICT DO NOTHING`. Without `deleted`, the table is not touched. No row is ever removed from `telegram_messages`.
+
 ### `channel_batches`
 
 Stable ranges of consecutive messages that the mapper shows one at a time. [batching.md](batching.md) explains the rules.
@@ -132,7 +144,7 @@ Stable ranges of consecutive messages that the mapper shows one at a time. [batc
 
 `DbService.rebuildOpenBatches` writes this table in one transaction under the channel row lock. It freezes open batches that have a mapped audio, plans the messages after the last frozen batch, and replaces the open batches. Frozen batches never change.
 
-There are no foreign keys between the tables. `deleteChannel` removes the channel, its messages, its mappings and its batches in one transaction. It takes the same channel row lock first, so a PUT that overlaps a delete either commits before it (and the delete removes its rows) or finds no channel and returns `404`. Neither order leaves mapping rows without a channel.
+There are no foreign keys between the tables. `deleteChannel` removes the channel, its messages, its mappings, its deletions and its batches in one transaction. It takes the same channel row lock first, so a PUT that overlaps a delete either commits before it (and the delete removes its rows) or finds no channel and returns `404`. Neither order leaves mapping rows without a channel.
 
 ### `telegram_json` shape
 

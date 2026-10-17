@@ -241,6 +241,7 @@ A batch is a stable range of consecutive messages that the mapper shows at one t
   "message_count": 24,
   "audio_count": 12,
   "mapped_audio_count": 3,
+  "deleted_audio_count": 2,
   "status": "frozen",
   "first_date": "2021-03-04T10:00:00.000Z",
   "last_date": "2021-03-05T08:12:00.000Z",
@@ -251,6 +252,7 @@ A batch is a stable range of consecutive messages that the mapper shows at one t
 - `first_message_id` and `last_message_id` are inclusive. Every message of the channel in that ID range belongs to the batch.
 - `message_count` counts only the messages that a person maps or checks: audio messages, and non-audio messages with text.
 - `mapped_audio_count` is the number of stored mappings whose audio is in the range.
+- `deleted_audio_count` is the number of stored deletions with role `audio` in the range (see [Deletions](#deletions)). A deleted audio counts as handled: the batch is fully done when `mapped_audio_count + deleted_audio_count == audio_count`.
 - `status` is `frozen` (the range never changes) or `open` (only the last batch; the next rebuild can replace it).
 - `first_date` and `last_date` have the time zone offset of known issue 15 in [status.md](status.md).
 
@@ -304,13 +306,15 @@ curl -b cookies.txt http://localhost:3000/api/channels/1234567890/batches/2/mess
   "batch": { /* the batch object, as in GET …/batches */ },
   "messages": [ /* message rows, as in GET …/messages */ ],
   "context_message": { /* a message row, or null */ },
-  "linked_messages": [ /* message rows, can be empty */ ]
+  "linked_messages": [ /* message rows, can be empty */ ],
+  "deleted": [ { "message_id": "41", "role": "audio" } ]
 }
 ```
 
 - `messages`: every stored message with `first_message_id <= message_id <= last_message_id`, newest first (`message_date` descending, then `message_id` descending). It includes the messages that `message_count` does not count, such as photos without text. The rows are the same as the rows of `GET …/messages`, in the same order: newest first, ties by `message_id`, newest first.
 - `context_message`: the stored message with the highest `message_id` below `first_message_id` that is a text message. A text message is not audio and has non-whitespace text, the same rules as the batch planner and the mapping check. It is `null` when there is none. The scraper always returns it. A client that wants it only when the batch starts with an uncaptioned audio decides that itself.
 - `linked_messages`: the text messages that stored mappings use when the mapping's `media_message_id` is inside the range and its `text_message_id` is outside it, for example a series header in an earlier batch. Each message appears once, newest first. A message that is in `messages` or is the `context_message` does not appear here.
+- `deleted`: the stored deletions with a `message_id` inside the range, sorted by `message_id` and then `role`. It is `[]` when there are none. See [Deletions](#deletions).
 
 | Status | Body |
 |---|---|
@@ -318,7 +322,7 @@ curl -b cookies.txt http://localhost:3000/api/channels/1234567890/batches/2/mess
 | 400 | `Invalid channel ID.` or `Invalid batch number.` (a positive integer up to 2147483647) |
 | 404 | `Channel not found.` or `Batch not found.` A channel with no batches has no batch 1 |
 
-The reads use the `(channel_id, message_id)` index with numeric bounds, so the cost depends on the batch size, not on the channel size. The batch and the messages are two reads. A rebuild between them can replace an open batch, so `batch.mapped_audio_count` can be one write behind `linked_messages`; `messages` always matches the range in `batch`.
+The reads use the `(channel_id, message_id)` index with numeric bounds, so the cost depends on the batch size, not on the channel size. The batch and the messages are two reads. A rebuild between them can replace an open batch, so `batch.mapped_audio_count` and `batch.deleted_audio_count` can be one write behind `linked_messages`; `messages` always matches the range in `batch`.
 
 ### `PUT /api/channels/:channelId/batches/:batchNo/mappings`
 
@@ -332,15 +336,39 @@ curl -b cookies.txt -X PUT -H 'Content-Type: application/json' \
 
 The body and the item checks are the same as for `PUT /api/channels/:channelId/mappings`, plus one check: every `media_message_id` must be inside the batch range. The `text_message_id` can be any text message of the channel, for example a series header in an earlier batch. An empty array clears the mappings of the batch.
 
+The body can also carry the batch's soft deletions. See [Deletions](#deletions) below.
+
 | Status | Body |
 |---|---|
-| 200 | `{"success": true, "channel_id": "1234567890", "batch_no": 2, "count": 1, "updated_at": "<ISO>"}` |
-| 400 | `Invalid channel ID.`, `Invalid batch number.`, `Request body is not valid JSON.`, or a problem list such as `mappings[0].media_message_id is not in batch 2.` |
+| 200 | `{"success": true, "channel_id": "1234567890", "batch_no": 2, "count": 1, "updated_at": "<ISO>"}`. Adds `"deleted_count": <n>` when the body had `deleted` |
+| 400 | `Invalid channel ID.`, `Invalid batch number.`, `Request body is not valid JSON.`, or a problem list such as `mappings[0].media_message_id is not in batch 2.` or `deleted[0].role must be one of: audio, text.` |
 | 404 | `Channel not found.` or `Batch not found.` |
 | 409 | `Batch changed while saving. Load it again.` A rebuild replaced the open batch after the request read it. Nothing is written |
 | 413 | `Request body exceeds the 5 MB limit.` |
 
 **Concurrent writes.** The write locks the channel row, as the full-set PUT does. It checks again that the batch has the range it validated against, and returns `409` if not. A full-set PUT and a batch PUT on the same channel still overwrite each other: the last write wins.
+
+### Deletions
+
+A person can mark a message as not needing processing, for one role: `audio` (the audio card) or `text` (the text card). A captioned audio is in both columns, so its two roles are deleted on their own. This is a soft delete: the message stays in `telegram_messages` and in the bucket, and a client restores it by leaving it out of the next save. Deletions belong to a batch and are saved with it.
+
+```bash
+curl -b cookies.txt -X PUT -H 'Content-Type: application/json' \
+  -d '{"mappings":[],"deleted":[{"message_id":"41","role":"audio"},{"message_id":"40","role":"text"}]}' \
+  http://localhost:3000/api/channels/1234567890/batches/2/mappings
+```
+
+- `deleted` is optional. When it is absent, the batch's stored deletions stay as they are, so a client that does not know about deletions keeps working. When it is present, it replaces the stored deletions whose `message_id` is inside the batch range, in the same transaction, under the same lock and `409` range check as the mappings. An empty array clears them. A deletion that stays keeps its `deleted_at`.
+- `message_id` is a positive integer message ID, a digit string or an integer. `role` is `audio` or `text`.
+- The check is all-or-nothing, and it reports problems like the mapping items, as `deleted[i].<field> <reason>` in `error` and `details`. A problem in `details` has `{ "list": "deleted", "index": i, "field": "message_id" | "role" | "deleted", "reason": … }`. Problems of `mappings` items have no `list` field. `deleted` that is not an array is `{ "field": "deleted", "reason": "must be an array." }` (also for `null`).
+  - `message_id` and `role` are valid.
+  - No duplicate `(message_id, role)`. The same message with `audio` and with `text` is allowed.
+  - `message_id` is inside the batch range (`deleted[i].message_id is not in batch N.`).
+  - The message is stored for the channel. A `role` `audio` message is audio, a `role` `text` message has text (the same rules as the mapping checks).
+  - A deleted audio is not the `media_message_id` of a mapping in the same body. A deleted text is not the `text_message_id` of a mapping in the same body.
+- A deleted text can still be the `text_message_id` of a stored mapping in another batch. Only the same body is checked.
+- The list is limited to 50,000 items, and the body to 5 MB, as for mappings.
+- The deletions are read back in `deleted` of `GET …/batches/:batchNo/messages`, and counted in `deleted_audio_count` of the batch object. Stage 3 skips deleted audio (see [pipeline.md](pipeline.md#data-other-stages-depend-on)).
 
 ## Media
 
