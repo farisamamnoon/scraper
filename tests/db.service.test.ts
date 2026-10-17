@@ -377,6 +377,73 @@ describe('DbService', () => {
     });
   });
 
+  describe('getBatchMessages', () => {
+    const batch = { first_message_id: '41', last_message_id: '80' } as any;
+    const row = (messageId: string) => ({ message_id: messageId });
+
+    it('reads the range, the context message and the linked texts with numeric bounds', async () => {
+      mockPool.query
+        .mockResolvedValueOnce({ rows: [row('60'), row('41')] })
+        .mockResolvedValueOnce({ rows: [row('39')] })
+        .mockResolvedValueOnce({ rows: [row('5')] });
+
+      const result = await dbService.getBatchMessages('123', batch);
+
+      expect(result).toEqual({
+        messages: [row('60'), row('41')],
+        context_message: row('39'),
+        linked_messages: [row('5')],
+      });
+      expect(mockPool.query).toHaveBeenCalledTimes(3);
+      const [rangeSql, rangeParams] = mockPool.query.mock.calls[0];
+      expect(rangeSql).toContain('message_id BETWEEN $2::bigint AND $3::bigint');
+      // The output column message_id is TEXT; an unqualified ORDER BY would sort it as text ('999' > '1675').
+      expect(rangeSql).toContain('ORDER BY telegram_messages.message_date DESC, telegram_messages.message_id DESC');
+      expect(rangeParams).toEqual(['123', '41', '80']);
+
+      // The context message uses the planner's audio and text definitions.
+      const [contextSql, contextParams] = mockPool.query.mock.calls[1];
+      expect(contextSql).toContain('message_id < $2::bigint');
+      expect(contextSql).toContain("telegram_json->'media'->>'media_type' IN ('audio', 'voice')");
+      expect(contextSql).toContain("COALESCE(telegram_json->>'text', '') ~ '\\S'");
+      expect(contextSql).toContain('ORDER BY telegram_messages.message_id DESC');
+      expect(contextSql).toContain('LIMIT 1');
+      expect(contextParams).toEqual(['123', '41']);
+
+      // Mappings whose audio is in range and whose text is outside it.
+      const [linkedSql, linkedParams] = mockPool.query.mock.calls[2];
+      expect(linkedSql).toContain('channel_mappings');
+      expect(linkedSql).toContain('cm.media_message_id BETWEEN $2::bigint AND $3::bigint');
+      expect(linkedSql).toContain('cm.text_message_id NOT BETWEEN $2::bigint AND $3::bigint');
+      expect(linkedSql).toContain('ORDER BY telegram_messages.message_date DESC, telegram_messages.message_id DESC');
+      expect(linkedParams).toEqual(['123', '41', '80']);
+    });
+
+    it('returns a null context message when no earlier text exists', async () => {
+      mockPool.query
+        .mockResolvedValueOnce({ rows: [row('41')] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const result = await dbService.getBatchMessages('123', batch);
+
+      expect(result.context_message).toBeNull();
+      expect(result.linked_messages).toEqual([]);
+    });
+
+    it('leaves the context message out of the linked messages', async () => {
+      mockPool.query
+        .mockResolvedValueOnce({ rows: [row('41')] })
+        .mockResolvedValueOnce({ rows: [row('39')] })
+        .mockResolvedValueOnce({ rows: [row('39'), row('5')] });
+
+      const result = await dbService.getBatchMessages('123', batch);
+
+      expect(result.context_message).toEqual(row('39'));
+      expect(result.linked_messages).toEqual([row('5')]);
+    });
+  });
+
   describe('channel lists', () => {
     it('should include mapping_count in getAllChannels and listChannels', async () => {
       mockPool.query.mockResolvedValue({ rows: [{ total: 0 }] });

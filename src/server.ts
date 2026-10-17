@@ -20,6 +20,7 @@ import { planChannelTail } from './batching';
 
 const MAPPINGS_PATH = '/api/channels/:channelId/mappings';
 const BATCHES_PATH = '/api/channels/:channelId/batches';
+const BATCH_MESSAGES_PATH = '/api/channels/:channelId/batches/:batchNo/messages';
 const BATCH_MAPPINGS_PATH = '/api/channels/:channelId/batches/:batchNo/mappings';
 
 export function createServer(
@@ -434,6 +435,11 @@ export function createServer(
     .custom((value) => parseTelegramId(value) !== null)
     .withMessage('Invalid channel ID.');
 
+  const batchNoParam = param('batchNo')
+    .isInt({ min: 1, max: 2147483647 })
+    .withMessage('Invalid batch number.')
+    .toInt();
+
   /**
    * Resolves :channelId to a tracked channel. Sends 400 or 404 and returns null when it is invalid or not tracked.
    */
@@ -589,6 +595,36 @@ export function createServer(
   );
 
   /**
+   * GET /api/channels/:channelId/batches/:batchNo/messages
+   * Returns one batch with its stored messages (newest first, the same rows as GET …/messages), the closest
+   * earlier text message as context, and the texts outside the range that stored mappings of its audio use.
+   */
+  app.get(
+    BATCH_MESSAGES_PATH,
+    apiAuthMiddleware,
+    [channelIdParam, batchNoParam, handleValidationErrors],
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const tracked = await findTrackedChannel(req, res);
+        if (!tracked) return;
+        const { channelId } = tracked;
+        const { batchNo } = matchedData(req, { locations: ['params'] }) as { batchNo: number };
+
+        const batch = await dbService.getChannelBatch(channelId, batchNo);
+        if (!batch) {
+          res.status(404).json({ success: false, error: 'Batch not found.' });
+          return;
+        }
+
+        const { messages, context_message, linked_messages } = await dbService.getBatchMessages(channelId, batch);
+        res.json({ success: true, channel_id: channelId, batch, messages, context_message, linked_messages });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  /**
    * POST /api/channels/:channelId/batches
    * Rebuilds the open end of a completed channel's batches. Frozen batches never change.
    */
@@ -634,7 +670,7 @@ export function createServer(
     apiAuthMiddleware,
     [
       channelIdParam,
-      param('batchNo').isInt({ min: 1, max: 2147483647 }).withMessage('Invalid batch number.').toInt(),
+      batchNoParam,
       handleValidationErrors
     ],
     async (req: Request, res: Response, next: NextFunction) => {
