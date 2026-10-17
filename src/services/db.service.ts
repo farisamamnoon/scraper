@@ -11,6 +11,9 @@ const IS_AUDIO_SQL = `COALESCE(
         )`;
 const HAS_TEXT_SQL = `COALESCE(telegram_json->>'text', '') ~ '\\S'`;
 
+// The columns of a stored message row, shared by the message reads.
+const MESSAGE_COLUMNS_SQL = 'id, channel_id::TEXT, message_id::TEXT, message_date, telegram_json, media_key, imported_at';
+
 const BATCH_COLUMNS_SQL = `
   SELECT
     b.batch_no,
@@ -91,6 +94,27 @@ export interface ChannelBatch {
   first_date: Date;
   last_date: Date;
   frozen_at: Date | null;
+}
+
+/** A stored message row, the same shape as getChannelMessages returns. */
+export interface StoredMessageRow {
+  id: string | number;
+  channel_id: string;
+  message_id: string;
+  message_date: Date;
+  telegram_json: any;
+  media_key: string | null;
+  imported_at: Date;
+}
+
+/** What the mapper needs to show one batch. */
+export interface BatchMessages {
+  /** Every stored message in the batch range, newest first. */
+  messages: StoredMessageRow[];
+  /** The closest text message before the range, or null. */
+  context_message: StoredMessageRow | null;
+  /** Texts outside the range that stored mappings of the range's audio point to. */
+  linked_messages: StoredMessageRow[];
 }
 
 export interface BatchRebuildResult {
@@ -714,6 +738,58 @@ export class DbService {
       batchNo,
     ]);
     return res.rows[0] ?? null;
+  }
+
+  /**
+   * Retrieves what the mapper shows for one batch: the stored messages in its range (newest first, the order of
+   * getChannelMessages), the closest earlier text message, and the texts outside the range that stored mappings
+   * of the range's audio use. All reads use the (channel_id, message_id) index and numeric bounds.
+   * ORDER BY names the table column: the output column message_id is TEXT and would sort as text.
+   * Audio and text are the same definitions the batch planner uses.
+   */
+  async getBatchMessages(
+    channelId: string | number | bigint,
+    batch: Pick<ChannelBatch, 'first_message_id' | 'last_message_id'>
+  ): Promise<BatchMessages> {
+    const id = channelId.toString();
+    const range = [id, batch.first_message_id, batch.last_message_id];
+    const [messagesRes, contextRes, linkedRes] = await Promise.all([
+      this.pool.query(
+        `SELECT ${MESSAGE_COLUMNS_SQL}
+         FROM telegram_messages
+         WHERE channel_id = $1 AND message_id BETWEEN $2::bigint AND $3::bigint
+         ORDER BY telegram_messages.message_date DESC, telegram_messages.message_id DESC;`,
+        range
+      ),
+      this.pool.query(
+        `SELECT ${MESSAGE_COLUMNS_SQL}
+         FROM telegram_messages
+         WHERE channel_id = $1 AND message_id < $2::bigint AND NOT ${IS_AUDIO_SQL} AND ${HAS_TEXT_SQL}
+         ORDER BY telegram_messages.message_id DESC
+         LIMIT 1;`,
+        [id, batch.first_message_id]
+      ),
+      this.pool.query(
+        `SELECT ${MESSAGE_COLUMNS_SQL}
+         FROM telegram_messages
+         WHERE channel_id = $1 AND message_id IN (
+           SELECT cm.text_message_id FROM channel_mappings cm
+           WHERE cm.channel_id = $1
+             AND cm.media_message_id BETWEEN $2::bigint AND $3::bigint
+             AND cm.text_message_id NOT BETWEEN $2::bigint AND $3::bigint
+         )
+         ORDER BY telegram_messages.message_date DESC, telegram_messages.message_id DESC;`,
+        range
+      ),
+    ]);
+    const context = contextRes.rows[0] ?? null;
+    return {
+      messages: messagesRes.rows,
+      context_message: context,
+      linked_messages: context
+        ? linkedRes.rows.filter((row: StoredMessageRow) => row.message_id !== context.message_id)
+        : linkedRes.rows,
+    };
   }
 
   /**

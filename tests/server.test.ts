@@ -33,6 +33,7 @@ describe('Express API Server Endpoints', () => {
       getChannelMappings: jest.fn(),
       getChannelBatches: jest.fn(),
       getChannelBatch: jest.fn(),
+      getBatchMessages: jest.fn(),
       rebuildOpenBatches: jest.fn(),
       replaceBatchMappings: jest.fn(),
     } as unknown as jest.Mocked<DbService>;
@@ -914,6 +915,117 @@ describe('Express API Server Endpoints', () => {
       mockDbService.getChannelBatches.mockRejectedValue(new Error('connection lost'));
 
       await request(app).get('/api/channels/123/batches').set('Cookie', authCookie).expect(500);
+    });
+  });
+
+  describe('GET /api/channels/:channelId/batches/:batchNo/messages', () => {
+    const path = '/api/channels/123/batches/2/messages';
+    const storedBatch = {
+      batch_no: 2,
+      first_message_id: '41',
+      last_message_id: '80',
+      message_count: 20,
+      audio_count: 10,
+      mapped_audio_count: 0,
+      status: 'open',
+      first_date: new Date('2024-01-01T00:00:00.000Z'),
+      last_date: new Date('2024-01-01T01:00:00.000Z'),
+      frozen_at: null,
+    };
+    const row = (messageId: string) => ({
+      id: Number(messageId),
+      channel_id: '123',
+      message_id: messageId,
+      message_date: new Date('2024-01-01T00:00:00.000Z'),
+      telegram_json: { text: `m${messageId}` },
+      media_key: null,
+      imported_at: new Date('2024-01-02T00:00:00.000Z'),
+    });
+
+    beforeEach(() => {
+      mockDbService.getChannelProgress.mockResolvedValue({ channel_id: '123' } as any);
+      mockDbService.getChannelBatch.mockResolvedValue(storedBatch as any);
+    });
+
+    it('returns the batch, its messages, the context message and the linked messages', async () => {
+      mockDbService.getBatchMessages.mockResolvedValue({
+        messages: [row('60'), row('41')],
+        context_message: row('39'),
+        linked_messages: [row('5')],
+      } as any);
+
+      const response = await request(app).get(path).set('Cookie', authCookie).expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.channel_id).toBe('123');
+      expect(response.body.batch).toMatchObject({ batch_no: 2, first_message_id: '41', last_message_id: '80' });
+      expect(response.body.messages.map((m: any) => m.message_id)).toEqual(['60', '41']);
+      expect(response.body.context_message.message_id).toBe('39');
+      expect(response.body.linked_messages.map((m: any) => m.message_id)).toEqual(['5']);
+      expect(mockDbService.getChannelBatch).toHaveBeenCalledWith('123', 2);
+      expect(mockDbService.getBatchMessages).toHaveBeenCalledWith('123', storedBatch);
+    });
+
+    it('returns a null context message and no linked messages when there are none', async () => {
+      mockDbService.getBatchMessages.mockResolvedValue({
+        messages: [],
+        context_message: null,
+        linked_messages: [],
+      });
+
+      const response = await request(app).get(path).set('Cookie', authCookie).expect(200);
+
+      expect(response.body.messages).toEqual([]);
+      expect(response.body.context_message).toBeNull();
+      expect(response.body.linked_messages).toEqual([]);
+    });
+
+    it('returns 401 when unauthenticated', async () => {
+      await request(app).get(path).expect(401);
+      expect(mockDbService.getBatchMessages).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 for an invalid channel ID', async () => {
+      const response = await request(app)
+        .get('/api/channels/abc/batches/2/messages')
+        .set('Cookie', authCookie)
+        .expect(400);
+
+      expect(response.body).toEqual({ success: false, error: 'Invalid channel ID.' });
+    });
+
+    it.each(['0', '-1', 'abc', '1.5', '2147483648'])('returns 400 for batch number %s', async (batchNo) => {
+      const response = await request(app)
+        .get(`/api/channels/123/batches/${batchNo}/messages`)
+        .set('Cookie', authCookie)
+        .expect(400);
+
+      expect(response.body).toEqual({ success: false, error: 'Invalid batch number.' });
+      expect(mockDbService.getChannelBatch).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for an untracked channel', async () => {
+      mockDbService.getChannelProgress.mockResolvedValue(null);
+
+      const response = await request(app).get(path).set('Cookie', authCookie).expect(404);
+
+      expect(response.body).toEqual({ success: false, error: 'Channel not found.' });
+      expect(mockDbService.getChannelBatch).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the channel has no batch with that number', async () => {
+      mockDbService.getChannelBatch.mockResolvedValue(null);
+
+      const response = await request(app).get(path).set('Cookie', authCookie).expect(404);
+
+      expect(response.body).toEqual({ success: false, error: 'Batch not found.' });
+      expect(mockDbService.getBatchMessages).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 when the query fails', async () => {
+      mockDbService.getBatchMessages.mockRejectedValue(new Error('connection lost'));
+
+      await request(app).get(path).set('Cookie', authCookie).expect(500);
     });
   });
 

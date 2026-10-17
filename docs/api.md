@@ -289,6 +289,37 @@ curl -b cookies.txt -X POST http://localhost:3000/api/channels/1234567890/batche
 
 `batch_count` is the number of all batches of the channel after the rebuild. `open_count` is 0 or 1.
 
+### `GET /api/channels/:channelId/batches/:batchNo/messages`
+
+The messages that the mapper needs to show one batch. Use it instead of `GET …/messages` when you show one batch: on a channel of about 12,000 messages it returns about 70 KB in about 10 ms, and the full list is about 17 MB.
+
+```bash
+curl -b cookies.txt http://localhost:3000/api/channels/1234567890/batches/2/messages
+```
+
+```json
+{
+  "success": true,
+  "channel_id": "1234567890",
+  "batch": { /* the batch object, as in GET …/batches */ },
+  "messages": [ /* message rows, as in GET …/messages */ ],
+  "context_message": { /* a message row, or null */ },
+  "linked_messages": [ /* message rows, can be empty */ ]
+}
+```
+
+- `messages`: every stored message with `first_message_id <= message_id <= last_message_id`, newest first (`message_date` descending, then `message_id` descending). It includes the messages that `message_count` does not count, such as photos without text. The rows are the same as the rows of `GET …/messages`, in the same order: newest first, ties by `message_id`, newest first.
+- `context_message`: the stored message with the highest `message_id` below `first_message_id` that is a text message. A text message is not audio and has non-whitespace text, the same rules as the batch planner and the mapping check. It is `null` when there is none. The scraper always returns it. A client that wants it only when the batch starts with an uncaptioned audio decides that itself.
+- `linked_messages`: the text messages that stored mappings use when the mapping's `media_message_id` is inside the range and its `text_message_id` is outside it, for example a series header in an earlier batch. Each message appears once, newest first. A message that is in `messages` or is the `context_message` does not appear here.
+
+| Status | Body |
+|---|---|
+| 200 | as above |
+| 400 | `Invalid channel ID.` or `Invalid batch number.` (a positive integer up to 2147483647) |
+| 404 | `Channel not found.` or `Batch not found.` A channel with no batches has no batch 1 |
+
+The reads use the `(channel_id, message_id)` index with numeric bounds, so the cost depends on the batch size, not on the channel size. The batch and the messages are two reads. A rebuild between them can replace an open batch, so `batch.mapped_audio_count` can be one write behind `linked_messages`; `messages` always matches the range in `batch`.
+
 ### `PUT /api/channels/:channelId/batches/:batchNo/mappings`
 
 Replaces the mappings whose audio is inside one batch. Mappings of other batches stay as they are, so two people can map different batches of one channel at the same time. The write also freezes the batch.

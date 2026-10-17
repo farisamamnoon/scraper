@@ -15,6 +15,7 @@ npm run build          # tsc -> dist/
 npx tsc --noEmit       # typecheck src/ (tests are typechecked by ts-jest)
 npm test               # jest, all services mocked, no network
 npx jest tests/server.test.ts -t "DELETE"   # single file / test name
+scripts/test-db.sh help    # real-data test DB + offline API for end-to-end tests (test-db skill)
 ```
 
 `npm test` has one known failure in a clean checkout without a `.env` (see `docs/status.md`). Don't treat it as a regression you caused.

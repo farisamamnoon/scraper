@@ -45,6 +45,7 @@ All configuration comes from environment variables (`.env` is loaded automatical
 | `TELEGRAM_SESSION_FILE_PATH` | | `./.session` | Where the session is read and saved |
 | `TELEGRAM_PROXY_HOST` / `_PORT` | | | SOCKS5 proxy for Telegram; the port is required when the host is set |
 | `TELEGRAM_PROXY_USERNAME` / `_PASSWORD` | | | |
+| `TELEGRAM_OFFLINE` | | | `true` skips the Telegram login and the importer: an API-only server for testing. Registering channels fails |
 | `POSTGRES_HOST`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | ✓ | | TLS with certificate verification is required |
 | `POSTGRES_PORT` | | `5432` | |
 | `S3_ENDPOINT` | ✓ | | Include the protocol, e.g. `https://<account>.r2.cloudflarestorage.com` |
@@ -64,6 +65,8 @@ npm run build       # compile to dist/
 ```
 
 One config test fails when there's no local `.env` ([known issue #4](docs/status.md#known-issues)).
+
+For end-to-end tests on real data, `scripts/test-db.sh serve` starts a Postgres container with a snapshot of the local data (`127.0.0.1:5433`) and an offline scraper against it. Set `TEST_DB_NAME=telegram_test_<topic>` to get your own clone and port. `scripts/test-db.sh reset` restores the snapshot in a few seconds, and `scripts/test-db.sh ui` also starts the mapper UI for browser tests. Run `scripts/test-db.sh help` for all commands, and see `.claude/skills/test-db/SKILL.md`.
 
 ```
 src/

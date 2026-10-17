@@ -93,8 +93,12 @@ async function bootstrap() {
     // 5. Initialize S3 Bucket
     // await s3Service.ensureBucketExists();
 
-    // 6. Connect to Telegram API
-    await telegramService.connect();
+    // 6. Connect to Telegram API (skipped in offline mode: API-only server on a test database)
+    if (config.telegram.offline) {
+      logger.warn('TELEGRAM_OFFLINE=true: Telegram login and the importer are disabled. Registering channels will fail.');
+    } else {
+      await telegramService.connect();
+    }
 
     // 7. Reset active channels that were interrupted by a crash/restart
     await pgPool.query(`
@@ -106,7 +110,9 @@ async function bootstrap() {
 
 
     // 9. Start background importer loop
-    await importer.start();
+    if (!config.telegram.offline) {
+      await importer.start();
+    }
 
     // 10. Start Express Server
     const app = createServer(dbService, importer, telegramService, s3Service, config.dashboardPassword);
