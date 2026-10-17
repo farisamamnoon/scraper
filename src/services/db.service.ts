@@ -24,6 +24,10 @@ const BATCH_COLUMNS_SQL = `
     (SELECT COUNT(*) FROM channel_mappings m
      WHERE m.channel_id = b.channel_id
        AND m.media_message_id BETWEEN b.first_message_id AND b.last_message_id)::INTEGER AS mapped_audio_count,
+    (SELECT COUNT(*) FROM channel_deletions d
+     WHERE d.channel_id = b.channel_id
+       AND d.role = 'audio'
+       AND d.message_id BETWEEN b.first_message_id AND b.last_message_id)::INTEGER AS deleted_audio_count,
     b.status,
     f.message_date AS first_date,
     l.message_date AS last_date,
@@ -73,6 +77,20 @@ export interface ChannelMapping extends MappingInput {
   updated_at: Date;
 }
 
+/**
+ * Which role of a message a deletion covers: the audio card or the text card. A captioned audio is in both
+ * columns, so each role is deleted on its own. The one list for the type, the API check and the SQL CHECK.
+ * The CHECK applies only when the table is created.
+ */
+export const DELETION_ROLES = ['audio', 'text'] as const;
+export type DeletionRole = (typeof DELETION_ROLES)[number];
+
+/** A soft deletion as sent by a client and as stored: the message is not needed for processing in this role. */
+export interface DeletionInput {
+  message_id: string;
+  role: DeletionRole;
+}
+
 /** What a stored message qualifies as when used in a mapping. */
 export interface MappableMessageInfo {
   message_id: string;
@@ -90,6 +108,8 @@ export interface ChannelBatch {
   audio_count: number;
   /** Stored mappings whose audio is in the range. */
   mapped_audio_count: number;
+  /** Stored deletions with role `audio` in the range. */
+  deleted_audio_count: number;
   status: BatchStatus;
   first_date: Date;
   last_date: Date;
@@ -115,6 +135,8 @@ export interface BatchMessages {
   context_message: StoredMessageRow | null;
   /** Texts outside the range that stored mappings of the range's audio point to. */
   linked_messages: StoredMessageRow[];
+  /** Stored deletions inside the range, in message ID order. */
+  deleted: DeletionInput[];
 }
 
 export interface BatchRebuildResult {
@@ -125,7 +147,8 @@ export interface BatchRebuildResult {
 }
 
 export type BatchMappingsResult =
-  | { status: 'ok'; count: number; updated_at: Date }
+  /** `deleted_count` is set only when the caller sent deletions. */
+  | { status: 'ok'; count: number; deleted_count?: number; updated_at: Date }
   /** The channel or the batch does not exist. */
   | { status: 'not_found' }
   /** The batch range changed since the caller read it. */
@@ -206,6 +229,17 @@ export class DbService {
       `);
 
       await client.query(`ALTER TABLE telegram_channels ADD COLUMN IF NOT EXISTS batch_order TEXT;`);
+
+      // Soft deletions from the mapper. The primary key also serves range reads by (channel_id, message_id).
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS channel_deletions (
+            channel_id BIGINT NOT NULL,
+            message_id BIGINT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN (${DELETION_ROLES.map((r) => `'${r}'`).join(', ')})),
+            deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (channel_id, message_id, role)
+        );
+      `);
 
       await client.query(`
         CREATE TABLE IF NOT EXISTS channel_batches (
@@ -539,11 +573,14 @@ export class DbService {
    * Replaces the mappings whose audio is inside one batch, and freezes that batch, in one transaction.
    * `batch` is the range the caller validated against: a different stored range returns `conflict`,
    * because a rebuild replaced the open batch in the meantime.
+   * `deleted` replaces the deletions whose message is inside the range in the same transaction (an empty array
+   * clears them; rows that stay keep their `deleted_at`). `undefined` leaves the deletions alone.
    */
   async replaceBatchMappings(
     channelId: string | number | bigint,
     batch: Pick<ChannelBatch, 'batch_no' | 'first_message_id' | 'last_message_id'>,
-    mappings: MappingInput[]
+    mappings: MappingInput[],
+    deleted?: DeletionInput[]
   ): Promise<BatchMappingsResult> {
     const id = channelId.toString();
     const client = await this.pool.connect();
@@ -573,13 +610,21 @@ export class DbService {
         [id, batch.first_message_id, batch.last_message_id]
       );
       await this.insertMappings(client, id, mappings);
+      if (deleted !== undefined) {
+        await this.replaceRangeDeletions(client, id, batch, deleted);
+      }
       await client.query(
         "UPDATE channel_batches SET status = 'frozen', frozen_at = COALESCE(frozen_at, NOW()) WHERE channel_id = $1 AND batch_no = $2",
         [id, batch.batch_no]
       );
       const res = await client.query('SELECT NOW() AS updated_at');
       await client.query('COMMIT');
-      return { status: 'ok', count: mappings.length, updated_at: res.rows[0].updated_at };
+      return {
+        status: 'ok',
+        count: mappings.length,
+        ...(deleted !== undefined ? { deleted_count: deleted.length } : {}),
+        updated_at: res.rows[0].updated_at,
+      };
     } catch (error) {
       await client.query('ROLLBACK');
       logger.error(`Failed to replace mappings of batch ${batch.batch_no} for channel ${id}`, error);
@@ -587,6 +632,35 @@ export class DbService {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Makes the deletions inside a message range equal to `deleted`: removes the stored ones that are not in the list,
+   * then inserts the new ones. Runs inside the caller's transaction.
+   */
+  private async replaceRangeDeletions(
+    client: PoolClient,
+    channelId: string,
+    range: Pick<ChannelBatch, 'first_message_id' | 'last_message_id'>,
+    deleted: DeletionInput[]
+  ): Promise<void> {
+    const messageIds = deleted.map((d) => d.message_id);
+    const roles = deleted.map((d) => d.role);
+    await client.query(
+      `DELETE FROM channel_deletions d
+         WHERE d.channel_id = $1 AND d.message_id BETWEEN $2 AND $3
+           AND NOT EXISTS (SELECT 1 FROM unnest($4::bigint[], $5::text[]) AS k(message_id, role)
+                           WHERE k.message_id = d.message_id AND k.role = d.role)`,
+      [channelId, range.first_message_id, range.last_message_id, messageIds, roles]
+    );
+    if (deleted.length === 0) return;
+    await client.query(
+      `INSERT INTO channel_deletions (channel_id, message_id, role)
+       SELECT $1::bigint, d.message_id, d.role
+       FROM unnest($2::bigint[], $3::text[]) AS d(message_id, role)
+       ON CONFLICT DO NOTHING`,
+      [channelId, messageIds, roles]
+    );
   }
 
   /** Bulk-inserts mappings with one unnest insert. Runs inside the caller's transaction. */
@@ -743,7 +817,7 @@ export class DbService {
   /**
    * Retrieves what the mapper shows for one batch: the stored messages in its range (newest first, the order of
    * getChannelMessages), the closest earlier text message, and the texts outside the range that stored mappings
-   * of the range's audio use. All reads use the (channel_id, message_id) index and numeric bounds.
+   * of the range's audio use, and the stored deletions in the range. All reads use the (channel_id, message_id) index and numeric bounds.
    * ORDER BY names the table column: the output column message_id is TEXT and would sort as text.
    * Audio and text are the same definitions the batch planner uses.
    */
@@ -753,7 +827,7 @@ export class DbService {
   ): Promise<BatchMessages> {
     const id = channelId.toString();
     const range = [id, batch.first_message_id, batch.last_message_id];
-    const [messagesRes, contextRes, linkedRes] = await Promise.all([
+    const [messagesRes, contextRes, linkedRes, deletedRes] = await Promise.all([
       this.pool.query(
         `SELECT ${MESSAGE_COLUMNS_SQL}
          FROM telegram_messages
@@ -781,6 +855,13 @@ export class DbService {
          ORDER BY telegram_messages.message_date DESC, telegram_messages.message_id DESC;`,
         range
       ),
+      this.pool.query(
+        `SELECT message_id::TEXT, role
+         FROM channel_deletions
+         WHERE channel_id = $1 AND message_id BETWEEN $2::bigint AND $3::bigint
+         ORDER BY channel_deletions.message_id, channel_deletions.role;`,
+        range
+      ),
     ]);
     const context = contextRes.rows[0] ?? null;
     return {
@@ -789,11 +870,12 @@ export class DbService {
       linked_messages: context
         ? linkedRes.rows.filter((row: StoredMessageRow) => row.message_id !== context.message_id)
         : linkedRes.rows,
+      deleted: deletedRes.rows,
     };
   }
 
   /**
-   * Deletes a channel and all its stored messages and mappings in a transaction.
+   * Deletes a channel and all its stored messages, mappings and deletions in a transaction.
    * Takes the same channel row lock as replaceChannelMappings first, so an overlapping replace
    * either finishes before the delete (and its rows are deleted) or finds no channel.
    */
@@ -805,6 +887,7 @@ export class DbService {
         channelId.toString()
       ]);
       await client.query('DELETE FROM channel_mappings WHERE channel_id = $1', [channelId.toString()]);
+      await client.query('DELETE FROM channel_deletions WHERE channel_id = $1', [channelId.toString()]);
       await client.query('DELETE FROM channel_batches WHERE channel_id = $1', [channelId.toString()]);
       await client.query('DELETE FROM telegram_messages WHERE channel_id = $1', [channelId.toString()]);
       await client.query('DELETE FROM telegram_channels WHERE channel_id = $1', [channelId.toString()]);

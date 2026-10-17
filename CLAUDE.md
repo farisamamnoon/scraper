@@ -2,7 +2,7 @@
 
 Telegram historical importer: a long-running Node/TypeScript process that copies the full message history of public Telegram channels into PostgreSQL (cleaned JSONB) and streams media attachments to S3-compatible storage. An Express server on the same process serves a password-protected dashboard and REST API for registering channels and watching progress.
 
-It is Stage 1 (export) of a four-stage migration pipeline and also stores Stage 2's text↔audio mappings. Stage 3 (LLM text processing) is not built, and Stage 4 (database delivery) is a separate service. Read `docs/pipeline.md` before changing anything another stage reads: `telegram_json`, S3 keys, `channel_mappings`, or the `/api/*` shapes.
+It is Stage 1 (export) of a four-stage migration pipeline and also stores Stage 2's text↔audio mappings. Stage 3 (LLM text processing) is not built, and Stage 4 (database delivery) is a separate service. Read `docs/pipeline.md` before changing anything another stage reads: `telegram_json`, S3 keys, `channel_mappings`, `channel_deletions`, or the `/api/*` shapes.
 
 The mapper UI is the sibling checkout `../telegram-pipeline-ui` (GitHub: `al-fikra-labs/salsabeel-workflow-frontend`, with its own `CLAUDE.md`). See `docs/status.md` for where the project stands and what is unresolved.
 
@@ -29,7 +29,7 @@ scripts/test-db.sh help    # real-data test DB + offline API for end-to-end test
 | `src/importer.ts` | Scheduler (5s tick, `IMPORT_CONCURRENCY` slots) and per-channel import loop: 100-message batches oldest→newest, media to S3, message upsert, progress checkpoint per batch. |
 | `src/batching.ts` | Pure batch planner for Stage 2: learns the channel order, cuts messages into 10–50 message batches, decides `open`/`frozen`. Rules in `docs/batching.md`. |
 | `src/server.ts` | `createServer(...)`: cookie auth, static `public/`, all `/api/*` routes, global error handler. |
-| `src/mappings.ts` | Pure request rules for `PUT …/mappings`: `parseTelegramId`, `parseMappingsBody`, item and body-size limits. |
+| `src/mappings.ts` | Pure request rules for `PUT …/mappings`: `parseTelegramId`, `parseMappingsBody`, `parseDeletedBody` (the batch PUT `deleted` list), item and body-size limits. |
 | `src/services/telegram.service.ts` | GramJS client, session handling, `executeWithRetry`, media metadata/filename derivation, media download. |
 | `src/services/db.service.ts` | `pg` pool wrapper. Schema DDL (`initializeSchema`), channel/message queries. |
 | `src/services/s3.service.ts` | Multipart streaming upload, object read stream, `ensureBucketExists` (currently not called). |
