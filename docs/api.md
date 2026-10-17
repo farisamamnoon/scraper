@@ -308,7 +308,7 @@ curl -b cookies.txt http://localhost:3000/api/channels/1234567890/batches/2/mess
 }
 ```
 
-- `messages`: every stored message with `first_message_id <= message_id <= last_message_id`, newest first (`message_date` descending, then `message_id` descending). It includes the messages that `message_count` does not count, such as photos without text. The rows are the same as the rows of `GET …/messages`.
+- `messages`: every stored message with `first_message_id <= message_id <= last_message_id`, newest first (`message_date` descending, then `message_id` descending). It includes the messages that `message_count` does not count, such as photos without text. The rows are the same as the rows of `GET …/messages`, in the same order: newest first, ties by `message_id`, newest first.
 - `context_message`: the stored message with the highest `message_id` below `first_message_id` that is a text message. A text message is not audio and has non-whitespace text, the same rules as the batch planner and the mapping check. It is `null` when there is none. The scraper always returns it. A client that wants it only when the batch starts with an uncaptioned audio decides that itself.
 - `linked_messages`: the text messages that stored mappings use when the mapping's `media_message_id` is inside the range and its `text_message_id` is outside it, for example a series header in an earlier batch. Each message appears once, newest first. A message that is in `messages` or is the `context_message` does not appear here.
 

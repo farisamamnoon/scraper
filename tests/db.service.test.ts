@@ -405,6 +405,8 @@ describe('DbService', () => {
       const [contextSql, contextParams] = mockPool.query.mock.calls[1];
       expect(contextSql).toContain('message_id < $2::bigint');
       expect(contextSql).toContain("telegram_json->'media'->>'media_type' IN ('audio', 'voice')");
+      // The context is NOT audio: dropping the NOT must fail this test.
+      expect(contextSql).toMatch(/AND NOT COALESCE\(\s*telegram_json->'media'->>'media_type' IN \('audio', 'voice'\)/);
       expect(contextSql).toContain("COALESCE(telegram_json->>'text', '') ~ '\\S'");
       expect(contextSql).toContain('ORDER BY telegram_messages.message_id DESC');
       expect(contextSql).toContain('LIMIT 1');
