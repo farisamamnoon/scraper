@@ -26,6 +26,10 @@ export interface BatchMessage {
   date: Date;
   is_audio: boolean;
   has_text: boolean;
+  /** The first 40 characters of the text, '' when there is none. */
+  text_head: string;
+  /** The text holds a down arrow or pointer emoji anywhere. */
+  has_down_arrow: boolean;
 }
 
 export interface PlannedBatch {
@@ -61,22 +65,38 @@ const isUncaptionedAudio = (m: BatchMessage): boolean => m.is_audio && !m.has_te
 const weight = (m: BatchMessage): number => (m.is_audio || m.has_text ? 1 : 0);
 const gapSeconds = (a: BatchMessage, b: BatchMessage): number => (b.date.getTime() - a.date.getTime()) / 1000;
 
+const UP_ARROW = /[⬆☝👆🔼⏫⤴]/u;
+
 /**
- * Learns whether descriptions come before or after their audio, from isolated two-message sessions.
+ * Learns whether descriptions come before or after their audio. Each text message of the weighted messages
+ * (audio, or non-audio with text) casts votes:
+ * - an up arrow in its first 40 characters, right after an uncaptioned audio: audio_first +1
+ * - a down arrow in its text, right before an uncaptioned audio: text_first +1
+ * - a run of 2 or more uncaptioned audio after it, within gap of the text: text_first +1 (a header)
+ * - a run of exactly 1 and that audio within gap: text_first +0.5
+ * - an uncaptioned audio right before it, within gap: audio_first +0.5
  * A tie or no votes gives audio_first, the most common order.
  */
 export function learnChannelOrder(messages: BatchMessage[], gap = GAP_SECONDS): ChannelOrder {
+  const seq = messages.filter((m) => weight(m) > 0);
   let textFirst = 0;
   let audioFirst = 0;
-  for (let i = 1; i < messages.length; i++) {
-    const prev = messages[i - 1];
-    const cur = messages[i];
-    if (gapSeconds(prev, cur) > gap) continue;
-    const isolatedLeft = i === 1 || gapSeconds(messages[i - 2], prev) > gap;
-    const isolatedRight = i === messages.length - 1 || gapSeconds(cur, messages[i + 1]) > gap;
-    if (!isolatedLeft || !isolatedRight) continue;
-    if (isText(prev) && isUncaptionedAudio(cur)) textFirst++;
-    if (isUncaptionedAudio(prev) && isText(cur)) audioFirst++;
+  for (let i = 0; i < seq.length; i++) {
+    const cur = seq[i];
+    if (!isText(cur)) continue;
+    const prev = i > 0 ? seq[i - 1] : undefined;
+    const next = i + 1 < seq.length ? seq[i + 1] : undefined;
+    const prevAudio = prev !== undefined && isUncaptionedAudio(prev);
+    const nextAudio = next !== undefined && isUncaptionedAudio(next);
+
+    if (prevAudio && UP_ARROW.test(cur.text_head)) audioFirst += 1;
+    if (nextAudio && cur.has_down_arrow) textFirst += 1;
+
+    let run = 0;
+    for (let j = i + 1; j < seq.length && isUncaptionedAudio(seq[j]) && gapSeconds(cur, seq[j]) <= gap; j++) run++;
+    if (run >= 2) textFirst += 1;
+    if (run === 1 && nextAudio && gapSeconds(cur, next) <= gap) textFirst += 0.5;
+    if (prevAudio && gapSeconds(prev, cur) <= gap) audioFirst += 0.5;
   }
   return textFirst > audioFirst ? 'text_first' : 'audio_first';
 }

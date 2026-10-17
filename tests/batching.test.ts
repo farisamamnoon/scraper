@@ -2,7 +2,8 @@ import { BatchMessage, learnChannelOrder, planChannelTail, splitIntoBatches } fr
 
 /**
  * Builds messages from a compact spec, one per character, IDs from 1:
- * A = uncaptioned audio, C = captioned audio, T = text, o = photo without text.
+ * A = uncaptioned audio, C = captioned audio, T = text, o = photo without text,
+ * U = text that starts with an up arrow, D = text that ends with a down arrow.
  * '|' adds no message and puts a 2-hour gap before the next one.
  */
 function build(spec: string, stepSeconds = 10): BatchMessage[] {
@@ -20,7 +21,9 @@ function build(spec: string, stepSeconds = 10): BatchMessage[] {
       message_id: String(messages.length + 1),
       date: new Date(time),
       is_audio: ch === 'A' || ch === 'C',
-      has_text: ch === 'C' || ch === 'T',
+      has_text: ch === 'C' || ch === 'T' || ch === 'U' || ch === 'D',
+      text_head: ch === 'U' ? '⬆️ Lecture 5' : ch === 'T' || ch === 'D' ? 'Lecture 5' : '',
+      has_down_arrow: ch === 'D',
     });
   }
   return messages;
@@ -40,8 +43,48 @@ describe('learnChannelOrder', () => {
     expect(learnChannelOrder(build('A|T'))).toBe('audio_first');
   });
 
-  it('ignores pairs inside longer sessions', () => {
+  it('weighs pairs inside a longer session like isolated ones', () => {
+    // Changed on purpose: the old learner skipped TATATA. Now it gives text_first 1.5 and audio_first 1,
+    // and the last AT adds 0.5 to audio_first, so the vote ties and gives audio_first.
     expect(learnChannelOrder(build('TATATA|AT'))).toBe('audio_first');
+    expect(learnChannelOrder(build('TATATA|TA'))).toBe('text_first');
+  });
+
+  it('reads a header followed by audio runs as text_first', () => {
+    expect(learnChannelOrder(build('TAAA|TAAA'))).toBe('text_first');
+  });
+
+  it('counts a run only within the gap of the text', () => {
+    // Steps of 1000 s: the second audio is 2000 s after the text, outside the 1800 s gap. The run is 1, so
+    // text_first gets 0.5, and the AT pair gives audio_first 0.5. A tie gives audio_first (a run of 2 would not).
+    expect(learnChannelOrder(build('TAA|AT', 1000))).toBe('audio_first');
+  });
+
+  it('reads an up arrow after an audio as audio_first, over the text_first of the following run', () => {
+    // Each AU pair: audio_first 1 + 0.5; the next audio is 2 hours away, so no text_first vote.
+    expect(learnChannelOrder(build('AU|AU|AU'))).toBe('audio_first');
+    // With the arrow, AUAA|AUAA votes audio_first 1.5 and text_first 1 (run of 2) per text.
+    expect(learnChannelOrder(build('AUAA|AUAA'))).toBe('audio_first');
+    // The arrow tips it: without it, TA|TA|AT gives text_first 1 against audio_first 0.5.
+    expect(learnChannelOrder(build('TA|TA|AT'))).toBe('text_first');
+    expect(learnChannelOrder(build('TA|TA|AU'))).toBe('audio_first');
+  });
+
+  it('reads a down arrow before an audio as text_first', () => {
+    expect(learnChannelOrder(build('DA|DA|DA'))).toBe('text_first');
+    // Without the arrow a tie of AT and TA gives audio_first; the arrow tips it.
+    expect(learnChannelOrder(build('AT|TA'))).toBe('audio_first');
+    expect(learnChannelOrder(build('AT|DA'))).toBe('text_first');
+  });
+
+  it('ignores an up arrow that is not in the first 40 characters', () => {
+    const messages = build('AT|AT|TA');
+    messages[1].text_head = 'x'.repeat(40);
+    expect(learnChannelOrder(messages)).toBe('audio_first');
+  });
+
+  it('skips photos without text when it looks for neighbors', () => {
+    expect(learnChannelOrder(build('TooAoA'))).toBe('text_first');
   });
 });
 

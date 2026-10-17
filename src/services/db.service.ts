@@ -782,7 +782,9 @@ export class DbService {
   /** Reads the messages after `afterMessageId` in message_id order, as the batch planner sees them. */
   private async readBatchMessages(client: PoolClient, channelId: string, afterMessageId: string): Promise<BatchMessage[]> {
     const res = await client.query(
-      `SELECT message_id::TEXT, message_date AS date, ${IS_AUDIO_SQL} AS is_audio, ${HAS_TEXT_SQL} AS has_text
+      `SELECT message_id::TEXT, message_date AS date, ${IS_AUDIO_SQL} AS is_audio, ${HAS_TEXT_SQL} AS has_text,
+              left(coalesce(telegram_json->>'text', ''), 40) AS text_head,
+              coalesce(telegram_json->>'text', '') ~ '[⬇👇🔽⏬⤵]' AS has_down_arrow
        FROM telegram_messages tm
        WHERE tm.channel_id = $1 AND tm.message_id > $2
        ORDER BY tm.message_id`,

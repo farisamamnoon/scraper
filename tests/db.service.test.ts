@@ -153,8 +153,15 @@ describe('DbService', () => {
   describe('rebuildOpenBatches', () => {
     const completedAt = new Date('2026-07-10T12:00:00.000Z');
     const messageRows = [
-      { message_id: '301', date: new Date('2026-07-01T00:00:00.000Z'), is_audio: true, has_text: false },
-      { message_id: '302', date: new Date('2026-07-01T00:00:10.000Z'), is_audio: false, has_text: true },
+      { message_id: '301', date: new Date('2026-07-01T00:00:00.000Z'), is_audio: true, has_text: false, text_head: '', has_down_arrow: false },
+      {
+        message_id: '302',
+        date: new Date('2026-07-01T00:00:10.000Z'),
+        is_audio: false,
+        has_text: true,
+        text_head: 'Lecture 5',
+        has_down_arrow: false,
+      },
     ];
     const plannedBatches: TailPlan['batches'] = [
       { first_message_id: '301', last_message_id: '301', message_count: 1, audio_count: 1, status: 'frozen' },

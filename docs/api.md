@@ -266,7 +266,7 @@ curl -b cookies.txt http://localhost:3000/api/channels/1234567890/batches
 { "success": true, "channel_id": "1234567890", "order": "audio_first", "batches": [ /* batch objects, by batch_no */ ] }
 ```
 
-`order` is the learned channel order, `audio_first` or `text_first`. It is `null` before the first rebuild. A channel with no batches returns an empty list.
+`order` is the learned channel order, `audio_first` or `text_first` (votes in [batching.md](batching.md#1-learn-the-channel-order)). It is `null` before the first rebuild. A channel with frozen batches keeps the order stored when they were cut, so it can differ from what a fresh build would learn. A channel with no batches returns an empty list.
 
 | Status | Body |
 |---|---|
