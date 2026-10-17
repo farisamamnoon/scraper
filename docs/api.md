@@ -162,7 +162,7 @@ IDs are Telegram `message_id` values, returned as strings because they are BigIn
 
 ### `PUT /api/channels/:channelId/mappings`
 
-Replaces the channel's **full** mapping set. A request with the same body gives the same result. An empty array clears all mappings.
+Replaces the channel's **full** mapping set. A request with the same body gives the same result. An empty array clears all mappings. This route does not check or change [deletions](#deletions): it can store a pair for a deleted audio or text. Use the batch route (below) when deletions matter; the UI does.
 
 ```bash
 curl -b cookies.txt -X PUT -H 'Content-Type: application/json' \
