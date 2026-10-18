@@ -38,12 +38,21 @@ The constants are `GAP_SECONDS = 1800`, `MIN_BATCH = 10` and `MAX_BATCH = 50`. E
 
 ### 1. Learn the channel order
 
-Find the isolated pairs: two consecutive messages with a gap of 30 minutes or less between them, and more than 30 minutes (or the channel start or end) on each outer side.
+Take the weighted messages (audio, or non-audio with text), in order. Every text message (not audio) casts votes. "Uncaptioned audio" is an audio without text. "Within the gap" means 30 minutes or less after the text.
 
-- A text and then an uncaptioned audio counts for `text_first`.
-- An uncaptioned audio and then a text counts for `audio_first`.
+| Vote | For |
+|---|---|
+| An up arrow (⬆ ☝ 👆 🔼 ⏫ ⤴) in the first 40 characters of the text, and the message before it is an uncaptioned audio | `audio_first` +1 |
+| A down arrow (⬇ 👇 🔽 ⏬ ⤵) anywhere in the text, and the next message is an uncaptioned audio | `text_first` +1 |
+| A run of 2 or more uncaptioned audio right after the text, each within the gap of the text (a series header) | `text_first` +1 |
+| A run of exactly 1 uncaptioned audio right after the text, within the gap | `text_first` +0.5 |
+| The message before the text is an uncaptioned audio, within the gap | `audio_first` +0.5 |
 
 The order with more votes wins. A tie, or no votes, gives `audio_first`, which is the most common order in the data.
+
+The first version voted only on isolated pairs (two messages with more than 30 minutes on each outer side). It missed the channels that post a header and then a run of audio, such as `islamic_history_ml`, `eDawa` and `QuranTafseerByNiyaf`, and learned `audio_first` for them. The votes above are the same as the mapper UI uses to pick the order of one batch.
+
+A rebuild keeps the stored order when frozen batches exist (see Rebuilds). A channel built before this change keeps its old order until a fresh build, which needs no frozen batch. The mapper UI resolves the order per batch.
 
 ### 2. Cut into sessions
 
